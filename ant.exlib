@@ -1,0 +1,47 @@
+# Copyright 2009 Wulf C. Krueger <philantrop@exherbo.org>
+# Distributed under the terms of the GNU General Public License v2
+
+DEPENDENCIES="
+    build:
+        dev-java/apache-ant
+"
+
+export_exlib_phases src_prepare src_compile src_test src_install
+
+ANT_HOME=/usr/share/ant
+
+ant_src_prepare() {
+    [[ -z ${ANT_BUNDLED_LIBSDIR[@]} ]] && ANT_BUNDLED_LIBSDIR=( lib )
+
+    # Kill those evil bundled libs...
+    for libdirs in "${ANT_BUNDLED_LIBSDIR[@]}"; do
+        if [[ -d "${WORK}/${libdirs}" ]]; then
+            edo rm -rf "${WORK}/${libdirs}"/*
+        fi
+    done
+
+    _ant_run "${ANT_SRC_PREPARE_PARAMS[@]}"
+}
+
+ant_src_compile() {
+#    _ant_run clean
+    _ant_run "${ANT_SRC_COMPILE_PARAMS[@]}" "${@}"
+}
+
+ant_src_test() {
+    _ant_run "${ANT_SRC_TEST_PARAMS[@]}"
+}
+
+ant_src_install() {
+    _ant_run "${ANT_SRC_INSTALL_PARAMS[@]}"
+}
+
+_ant_run() {
+    ANT_BUILD_DIR="${ANT_BUILD_DIR:-build}"
+    ANT_BUILD_XML="${ANT_BUILD_XML:-build.xml}"
+
+    echo "${ANT_HOME}"/bin/ant -f ${ANT_BUILD_XML} -Dnoget=true "${@}"
+    "${ANT_HOME}"/bin/ant -f ${ANT_BUILD_XML} -Dnoget=true "${@}" ||
+        die_unless_nonfatal "_ant_run returned exit status: $?"
+}
+

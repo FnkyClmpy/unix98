@@ -1,0 +1,26 @@
+# Copyright 2018 Rasmus Thomsen <cogitri@exherbo.org>
+# Distributed under the terms of the GNU General Public License v2
+
+export_exlib_phases src_compile src_test src_install
+
+DEPENDENCIES="
+    build:
+        sys-devel/ninja
+"
+
+eninja() {
+    edo ninja -v -j${EXJOBS:-1} "$@"
+}
+
+ninja_src_compile() {
+    eninja
+}
+
+ninja_src_test() {
+    eninja test
+}
+
+ninja_src_install() {
+    DESTDIR="${IMAGE}" eninja install
+}
+

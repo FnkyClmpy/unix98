@@ -1,0 +1,334 @@
+# Copyright 2017 Marc-Antoine Perennou <keruspe@exherbo.org>
+# Copyright 2018 Heiko Becker <heirecka@exherbo.org>
+# Distributed under the terms of the GNU General Public License v2
+
+require flag-o-matic
+require utf8-locale
+require ninja
+
+myexparam meson_minimum_version=1.12.0
+
+myexparam -b rust=false
+
+# If this param is set to false, then you will have a path configuration which looks like:
+#   prefix=/usr
+#   bindir=${prefix}/$(exhost --target)/bin
+#   datadir=${prefix}/share
+#   sysconfdir=/etc
+# If this param is set to true, then you will have a path configuration that looks like:
+#   prefix=/usr/$(exhost --target)
+#   bindir=${prefix}/bin
+#   datadir=/usr/share
+#   sysconfdir=/etc
+#
+# The difference is rather subtle. In most cases, the default (false) is fine, and it helps avoid
+# problems in packages that hardcode datadir=${prefix}/share in the source code.
+#
+# If the package either sets or uses variables containing paths relative to ${prefix} in a
+# pkg-config file (for example, a plugin loader path), then this should be set to 'true' so that
+# the generated .pc file is compatible with autotools and cmake.
+myexparam -b cross_prefix=false
+
+if exparam -b rust ; then
+    require cargo
+fi
+
+export_exlib_phases pkg_setup pkg_pretend src_unpack src_prepare src_configure src_compile src_test src_install
+
+DEPENDENCIES="
+    build:
+        sys-devel/meson[>=$(exparam meson_minimum_version)]
+"
+
+MESON_SOURCE="${MESON_SOURCE:-${WORK}}"
+WORK="${WORKBASE}/_build"
+
+_meson_write_native_file() {
+    local build=$(exhost --build) python=
+
+    if [[ $(type -t python_get_abi) == 'function' ]]; then
+        # 'python' is used by the python module, and 'python3' covers usage of find_program('python3')
+        python="python = 'python$(python_get_abi)'
+python3 = 'python$(python_get_abi)'"
+    fi
+
+    edo cat > meson-native.txt <<EOF
+[binaries]
+c = '${build}-cc'
+cpp = '${build}-c++'
+ar = '${build}-ar'
+ld = '${build}-ld'
+strip = '${build}-strip'
+objcopy = '${build}-objcopy'
+nm = '${build}-nm'
+readelf = '${build}-readelf'
+pkg-config = '${build}-pkg-config'
+rust = '${build}-rustc'
+${python}
+
+[properties]
+needs_exe_wrapper = false
+EOF
+}
+
+_meson_write_cross_file() {
+    local target=$(exhost --target) needs_exe_wrapper=
+
+    # target                  | cpu_family | cpu
+    # x86_64-pc-linux-*       | x86_64     | x86_64
+    # i686-pc-linux-*         | x86        | i686
+    # armvX-unknown-linux-*   | arm        | armvX
+    # aarch64-unknown-linux-* | aarch64    | aarch64
+
+    case ${target} in
+        aarch64*)
+            _MESON_CPU_FAMILY=aarch64
+            _MESON_TARGET_CPU=aarch64
+            ;;
+        armv*)
+            _MESON_CPU_FAMILY=arm
+            _MESON_TARGET_CPU=${target%-unknown-linux-*}
+            ;;
+        i686*)
+            _MESON_CPU_FAMILY=x86
+            _MESON_TARGET_CPU=i686
+            ;;
+        x86_64*)
+            _MESON_CPU_FAMILY=x86_64
+            _MESON_TARGET_CPU=x86_64
+            ;;
+        *)
+            die "The architecture ${target} you want to build for is not yet \
+                supported by meson.exlib. Please provide a patch if you want \
+                it added"
+            ;;
+    esac
+
+    if exhost --is-native -q ; then
+        needs_exe_wrapper=false
+    else
+        if [[ $(exhost --target) == i686-pc-linux-* ]] && [[ $(exhost --build) == x86_64-pc-linux-* ]] ; then
+            needs_exe_wrapper=false
+            llvm_config="llvm-config = '/usr/${target}/bin/llvm-config'"
+            pkg_config_libdir="pkg_config_libdir = '/usr/${target}/lib/pkgconfig:/usr/share/pkgconfig'"
+        else
+            needs_exe_wrapper=true
+        fi
+    fi
+
+    target_cflags="${target//-/_}_CFLAGS"
+    target_cxxflags="${target//-/_}_CXXFLAGS"
+
+    # Prepare *FLAGS for meson, they need to be passed as arrays not as
+    # strings and we need to avoid passing only '' if they are empty.
+    [[ -z ${!target_cflags} ]] || meson_c_args="'$(echo ${!target_cflags} | sed -r "s/\s+/','/g")'"
+    [[ -z ${!target_cxxflags} ]] || meson_cpp_args="'$(echo ${!target_cxxflags} | sed -r "s/\s+/','/g")'"
+    [[ -z ${LDFLAGS} ]] || meson_c_cpp_link_args="'$(echo ${LDFLAGS} | sed -r "s/\s+/','/g")'"
+
+    # Write everything in a cross file, which is later added to the meson
+    # invocation.
+    edo cat > meson-cross.txt <<EOF
+[binaries]
+c = '${target}-cc'
+cpp = '${target}-c++'
+ar = '${target}-ar'
+ld = '${target}-ld'
+strip = '${target}-strip'
+objcopy = '${target}-objcopy'
+nm = '${target}-nm'
+readelf = '${target}-readelf'
+pkg-config = '${target}-pkg-config'
+rust = '${target}-rustc'
+${llvm_config}
+
+[built-in options]
+c_args = [ ${meson_c_args} ]
+c_link_args = [ ${meson_c_cpp_link_args} ]
+
+cpp_args = [ ${meson_cpp_args} ]
+cpp_link_args = [ ${meson_c_cpp_link_args} ]
+
+[properties]
+needs_exe_wrapper = ${needs_exe_wrapper}
+${pkg_config_libdir}
+
+[host_machine]
+system = 'linux'
+cpu_family = '${_MESON_CPU_FAMILY}'
+cpu = '${_MESON_TARGET_CPU}'
+endian = 'little'
+EOF
+}
+
+meson_pkg_setup() {
+    require_utf8_locale
+
+    # C{,XX}FLAGS for native builds during cross-compilation. meson grabs
+    # those from the env, for which it is set for the cross-compile target by
+    # paludis.
+    CFLAGS=$(print-build-flags CFLAGS)
+    CXXFLAGS=$(print-build-flags CXXFLAGS)
+    CPPFLAGS=$(print-build-flags CFLAGS)
+}
+
+meson_pkg_pretend() {
+    local SUPPORTED_MESON_VARIABLES=(
+        MESON_SOURCE
+        MESON_SRC_CONFIGURE_PARAMS
+        MESON_SRC_CONFIGURE_OPTION_ENABLES
+        MESON_SRC_CONFIGURE_OPTION_FEATURES
+        MESON_SRC_CONFIGURE_OPTION_SWITCHES
+        MESON_SRC_CONFIGURE_OPTIONS
+        MESON_SRC_CONFIGURE_TESTS
+        MESON_SRC_TEST_EXCLUDED_TESTS
+    )
+
+    local meson_vars="${!MESON_*}"
+    for meson_var in ${meson_vars}; do
+        hasq ${meson_var} "${SUPPORTED_MESON_VARIABLES[@]}" && continue
+
+        die "Unsupported meson variable: ${meson_var}"
+    done
+}
+
+meson_src_unpack() {
+    default
+    if [[ $(type -t scm_src_unpack) == function ]]; then
+        scm_src_unpack
+    fi
+    edo mkdir -p "${WORK}"
+
+    if exparam -b rust; then
+        edo pushd "${MESON_SOURCE}"
+        ecargo_fetch
+        edo popd
+    fi
+}
+
+meson_src_prepare() {
+    edo cd "${MESON_SOURCE}"
+    default
+}
+
+meson_switch() {
+    illegal_in_global_scope
+
+    # <option name> [<flag name> [<value if enabled> [<value if disabled>]]]
+    echo "-D${2:-$(optionfmt ${1})}=$(option "${1}" "${3:-true}" "${4:-false}")"
+}
+
+meson_feature() {
+    illegal_in_global_scope
+
+    # <option name> [<flag name>]
+    echo "-D${2:-$(optionfmt ${1})}=$(option "${1}" "enabled" "disabled")"
+}
+
+meson_enable() {
+    illegal_in_global_scope
+
+    # <option name> [<flag name> [<value if enabled> [<value if disabled>]]]
+    echo "-Denable-${2:-$(optionfmt ${1})}=$(option "${1}" "${3:-true}" "${4:-false}")"
+}
+
+exmeson() {
+    local target=$(exhost --target)
+    local cross_file_arg= python_arg=() directories=()
+
+    _meson_write_native_file
+
+    if ! exhost --is-native -q; then
+        _meson_write_cross_file
+        cross_file_arg="--cross-file meson-cross.txt"
+    fi
+
+    if [[ $(type -t python_get_abi) == 'function' ]]; then
+        python_arg=(
+            --python.purelibdir $(python_get_sitedir)
+            --python.platlibdir $(python_get_sitedir)
+        )
+    fi
+
+    if exparam -b cross_prefix; then
+        directories=(
+            --prefix=/usr/${target}
+            --datadir=/usr/share
+            --infodir=/usr/share/info
+            --libdir=lib
+            --localedir=/usr/share/locale
+            --localstatedir=/var
+            --mandir=/usr/share/man
+            --sbindir=bin
+            --sharedstatedir=/var/lib
+            --sysconfdir=/etc
+        )
+    else
+        # Meson has special handling for --prefix=/usr that sets sysconfdir, localstatedir,
+        # sharedstatedir to appropriate values automatically.
+        directories=(
+            --prefix=/usr
+            --bindir=${target}/bin
+            --includedir=${target}/include
+            --libdir=${target}/lib
+            --libexecdir=${target}/libexec
+            --sbindir=${target}/bin
+        )
+    fi
+
+    # Specifying CC and CXX is only necessary for cross-compiling, but
+    # because build=target for native builds I omit the conditional.
+    # --wrap-mode=nodownload prohibits meson to download fallback
+    # dependencies when they are not found on the system.
+    CC=$(exhost --build)-cc CXX=$(exhost --build)-c++             \
+    edo meson setup                                               \
+        "${directories[@]}"                                       \
+        --auto-features=disabled                                  \
+        --default-library=shared                                  \
+        --native-file meson-native.txt                            \
+        --wrap-mode=nodownload                                    \
+        -Dwerror=false                                            \
+        ${cross_file_arg}                                         \
+        "${python_arg[@]}"                                        \
+        "${@}"                                                    \
+        "${MESON_SOURCE}"
+}
+
+meson_src_configure() {
+    exmeson \
+        "${MESON_SRC_CONFIGURE_PARAMS[@]}"                        \
+        $(for s in "${MESON_SRC_CONFIGURE_OPTION_SWITCHES[@]}"; do
+            meson_switch ${s}
+        done)                                                     \
+        $(for s in "${MESON_SRC_CONFIGURE_OPTION_FEATURES[@]}"; do
+            meson_feature ${s}
+        done)                                                     \
+        $(for s in "${MESON_SRC_CONFIGURE_OPTION_ENABLES[@]}"; do
+            meson_enable ${s}
+        done)                                                     \
+        $(for s in "${MESON_SRC_CONFIGURE_OPTIONS[@]}"; do
+            option ${s}
+        done)                                                     \
+        $(for s in "${MESON_SRC_CONFIGURE_TESTS[@]}"; do
+            expecting_tests ${s}
+        done)                                                     \
+        "${@}"
+}
+
+meson_src_compile() {
+    ninja_src_compile "${@}"
+}
+
+meson_src_test() {
+    edo meson test -j${EXJOBS:-1} \
+        $(for s in "${MESON_SRC_TEST_EXCLUDED_TESTS[@]}"; do
+            echo --exclude ${s}
+        done)                                                     \
+        "${@}"
+}
+
+meson_src_install() {
+    ninja_src_install
+    edo cd "${MESON_SOURCE}"
+    emagicdocs
+}
+

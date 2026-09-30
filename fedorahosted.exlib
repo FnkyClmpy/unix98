@@ -1,0 +1,20 @@
+# Copyright 2016 Kylie McClain <somasis@exherbo.org>
+# Distributed under the terms of the GNU General Public License v2
+
+# For projects hosted at fedorahosted.org
+
+myexparam pn=${MY_PN:-${PN}}
+myexparam pv=${MY_PV:-${PV}}
+myexparam pnv=${MY_PNV:-$(exparam pn)-$(exparam pv)}
+myexparam prefix= # allow for a url prefix, if the project uses per-release directories (like with elfutils)
+myexparam suffix=tar.gz
+
+exparam -v FEDORAHOSTED_PN pn
+
+HOMEPAGE="https://fedorahosted.org/${FEDORAHOSTED_PN}"
+
+REMOTE_IDS="fedorahosted:${FEDORAHOSTED_PN}"
+
+if ! ever is_scm;then
+    DOWNLOADS="https://fedorahosted.org/releases/${FEDORAHOSTED_PN:0:1}/${FEDORAHOSTED_PN:1:1}/${FEDORAHOSTED_PN}/$(exparam prefix)$(exparam pnv).$(exparam suffix)"
+fi

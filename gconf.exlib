@@ -1,0 +1,158 @@
+# Copyright 2008 Saleem Abdulrasool <compnerd@compnerd.org>
+# Distributed under the terms of the GNU General Purpose License v2
+# Based in part on 'gnome2-utils.eclass' from Gentoo which is
+#    Copyright 1999-2006 Gentoo Foundation
+
+: ${GCONFTOOL:=${ROOT}usr/bin/gconftool-2}
+
+export_exlib_phases pkg_preinst src_install pkg_postinst pkg_prerm
+
+gconf_exlib_save_gconf_entries() {
+    pushd "${IMAGE}" &> /dev/null
+    export GNOME_EXLIB_GCONF_ENTRIES=$(find 'etc/gconf/schemas' -name '*.entries' 2>/dev/null)
+    popd &> /dev/null
+}
+
+gconf_exlib_save_gconf_schemas() {
+    pushd "${IMAGE}" &> /dev/null
+    export GNOME_EXLIB_GCONF_SCHEMAS=$(find 'etc/gconf/schemas' -name '*.schemas' 2>/dev/null)
+    popd &> /dev/null
+}
+
+gconf_exlib_restart_gconfd() {
+    local pids=$(pgrep -x gconfd-2)
+
+    if [[ -n "${pids}" ]] ; then
+        echo "Reloading GConf schemas ..."
+        kill -HUP ${pids}
+    fi
+}
+
+gconf_exlib_load_gconf_entries() {
+    local retval=0 source=
+
+    [[ -x "${GCONFTOOL}" ]] || return
+    [[ -n "${GNOME_EXLIB_GCONF_ENTRIES}" ]] || return
+
+    source=$("${GCONFTOOL}" --get-default-source | sed "s;:/;:${ROOT};")
+
+    echo "Loading GConf entries ..."
+
+    for entry in ${GNOME_EXLIB_GCONF_ENTRIES} ; do
+        [[ -e "${ROOT}${entry}" ]] || continue
+        echo "${GCONFTOOL} --direct --config-source ${source} --load ${ROOT}${entry}"
+        "${GCONFTOOL}" --direct --config-source "${source}" --load "${ROOT}${entry}" > /dev/null ||
+            failures+=( "${ROOT}${entry}" )
+    done
+
+    if [[ ${#failures} -gt 0 ]] ; then
+        eerror "GConf entry loading failures:"
+        for failure in ${failures[*]} ; do
+            eerror "    ${failure}"
+        done
+    fi
+}
+
+gconf_exlib_unload_gconf_entries() {
+    local failures=( ) source=
+
+    [[ -x "${GCONFTOOL}" ]] || return
+    [[ -n "${GNOME_EXLIB_GCONF_ENTRIES}" ]] || return
+
+    source=$("${GCONFTOOL}" --get-default-source | sed "s;:/;:${ROOT};")
+
+    echo "Unloading GConf entries ..."
+
+    for entry in ${GNOME_EXLIB_GCONF_ENTRIES} ; do
+        [[ -e "${ROOT}${entry}" ]] || continue
+        echo "${GCONFTOOL} --direct --config-source ${source} --unload ${ROOT}${entry}"
+        "${GCONFTOOL}" --direct --config-source "${source}" --unload "${ROOT}${entry}" > /dev/null ||
+            failures+=( "${ROOT}${entry}" )
+    done
+
+    if [[ ${#failures} -gt 0 ]] ; then
+        eerror "GConf entry unloading failures:"
+        for failure in ${failures[*]} ; do
+            eerror "    ${failure}"
+        done
+    fi
+}
+
+gconf_exlib_install_gconf_schemas() {
+    local failures=( )
+
+    [[ -x "${GCONFTOOL}" ]] || return
+    [[ -n "${GNOME_EXLIB_GCONF_SCHEMAS}" ]] || return
+
+    export GCONF_CONFIG_SOURCE=$("${GCONFTOOL}" --get-default-source | sed "s;:/;:${ROOT};")
+
+    unset DBUS_SESSION_BUS_ADDRESS
+
+    echo "Installing GConf schemas ..."
+
+    for schema in ${GNOME_EXLIB_GCONF_SCHEMAS} ; do
+        [[ -e "${ROOT}${schema}" ]] || continue
+        echo "${GCONFTOOL} --makefile-install-rule ${ROOT}${schema}"
+        "${GCONFTOOL}" --makefile-install-rule "${ROOT}${schema}" > /dev/null ||
+            failures+=( "${ROOT}${schema}" )
+    done
+
+    if [[ ${#failures} -gt 0 ]] ; then
+        eerror "GConf schema installation failures:"
+        for failure in ${failures[*]} ; do
+            eerror "    ${failures}"
+        done
+    fi
+}
+
+gconf_exlib_uninstall_gconf_schemas() {
+    local failures=( )
+
+    [[ -x "${GCONFTOOL}" ]] || return
+    [[ -n "${GNOME_EXLIB_GCONF_SCHEMAS}" ]] || return
+
+    export GCONF_CONFIG_SOURCE=$("${GCONFTOOL}" --get-default-source | sed "s;:/;:${ROOT};")
+
+    unset DISPLAY
+    unset DBUS_SESSION_BUS_ADDRESS
+
+    echo "Uninstalling GConf schemas ..."
+
+    for schema in ${GNOME_EXLIB_GCONF_SCHEMAS} ; do
+        [[ -e "${ROOT}${schema}" ]] || continue
+        echo "${GCONFTOOL} --makefile-uninstall-rule ${ROOT}${schema}"
+        "${GCONFTOOL}" --makefile-uninstall-rule "${ROOT}${schema}" > /dev/null ||
+            failures+=( "${ROOT}${schema}" )
+    done
+
+    if [[ ${#failures} -gt 0 ]] ; then
+        eerror "GConf schema uninstallation failures:"
+        for failure in ${failures[*]} ; do
+            eerror "    ${failure}"
+        done
+    fi
+}
+
+gconf_pkg_preinst() {
+    gconf_exlib_save_gconf_schemas
+    gconf_exlib_save_gconf_entries
+}
+
+gconf_src_install() {
+    export GCONF_DISABLE_MAKEFILE_SCHEMA_INSTALL=1
+    default
+    unset GCONF_DISABLE_MAKEFILE_SCHEMA_INSTALL
+}
+
+gconf_pkg_postinst() {
+    gconf_exlib_install_gconf_schemas
+    gconf_exlib_load_gconf_entries
+
+    gconf_exlib_restart_gconfd
+}
+
+gconf_pkg_prerm() {
+    gconf_exlib_uninstall_gconf_schemas
+    gconf_exlib_unload_gconf_entries
+}
+

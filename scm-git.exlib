@@ -1,0 +1,304 @@
+# Copyright 2008 David Leverton <dleverton@exherbo.org>
+# Distributed under the terms of the GNU General Public License v2
+# Based in part upon git.exlib, which is:
+#    Copyright 2008 Fernando J. Pereda
+#    Based upon 'git.eclass' which is:
+#       Copyright 1999-2007 Gentoo Foundation
+
+if [[ -z ${SCM_TYPE} ]]; then
+    SCM_TYPE=git
+    require scm
+fi
+
+scm-git_do_dependencies() {
+    local git='dev-scm/git[>=1.6.0]'
+    if [[ $(scm_get_var REPOSITORY) == https://* ]]; then
+        echo "${git}[curl] net-misc/curl[ssl(+)]"
+    elif [[ $(scm_get_var REPOSITORY) == http://* || $(scm_get_var REPOSITORY) == ftp://* ]]; then
+        echo "${git}[curl]"
+    elif [[ $(scm_get_var REPOSITORY) == rsync://* ]]; then
+        echo "${git} net-misc/rsync"
+    elif [[ $(scm_get_var REPOSITORY) == ssh://* ]] ||
+            [[ $(scm_get_var REPOSITORY) != *://* && $(scm_get_var REPOSITORY) == *:* ]]; then
+        echo "${git} net-misc/openssh"
+    else
+        echo "${git}"
+    fi
+
+    if [[ -n $(scm_get_var TAG) ]]; then
+        local keys
+        scm_get_array GIT_TAG_SIGNING_KEYS keys
+        [[ ${#keys[@]} -gt 0 ]] && echo app-crypt/gnupg
+    fi
+}
+
+scm-git_do_need_slotted_checkout_dir() {
+    false
+}
+
+scm-git_do_check_vars() {
+    [[ -n $(scm_get_var TAG) && -n $(scm_get_var REVISION) ]] \
+        && die "for git, $(scm_var_name TAG) must not be set at the same time as $(scm_var_name REVISION)"
+    [[ -z $(scm_get_var BRANCH) && -z $(scm_get_var REVISION) &&
+            -z $(scm_get_var TAG) ]] && scm_set_var BRANCH master
+    local rev=$(scm_get_var REVISION)
+    [[ -n ${rev} && ${rev} != _ ]] && [[ ${rev} == *[^0-9a-f]* || ${#rev} -ne 40 ]] \
+        && die "for git, $(scm_var_name REVISION) must be a 40-character lowercase hexadecimal SHA-1 sum"
+    [[ -n $(scm_get_var SUBPATH) ]] && die "for git, $(scm_var_name SUBPATH) must not be set"
+
+    scm_modify_var REPOSITORY scm_trim_slashes -scheme -trailing
+
+    local submodules=( $(scm_get_var EXTERNAL_REFS) ) idx
+    if [[ -n ${submodules[@]} ]]; then
+        for idx in ${!submodules[@]}; do
+            [[ ${submodules[${idx}]} == ?*:* ]] || die "$(scm_var_name EXTERNAL_REFS) entry ${submodules[${idx}]} is malformed"
+            local path=$(scm_trim_slashes -leading -trailing "${submodules[${idx}]%:*}")
+            local that=${submodules[${idx}]##*:}
+            submodules[${idx}]=${path}:${that}
+            if [[ -n ${that} ]]; then
+                has ${that} ${SCM_SECONDARY_REPOSITORIES} || die "$(scm_var_name EXTERNAL_REFS) references non-existent repository ${that}"
+                local othertype=$(SCM_THIS=${that} scm_get_var TYPE)
+                [[ ${othertype:-${SCM_TYPE}} == git ]] || die "$(scm_var_name EXTERNAL_REFS) references non-git repository ${that}"
+                [[ -z $(SCM_THIS=${that} scm_get_var REVISION) ]] && SCM_THIS=${that} scm_set_var REVISION _
+                if [[ -z $(SCM_THIS=${that} scm_get_var UNPACK_TO) ]]; then
+                    local my_unpack_to=$(scm_get_var UNPACK_TO)
+                    SCM_THIS=${that} scm_set_var UNPACK_TO "${my_unpack_to}/${path}"
+                fi
+            fi
+        done
+        scm_set_var EXTERNAL_REFS "${submodules[*]}"
+    fi
+}
+
+scm-git_git() {
+    local echo=echo
+    if [[ ${1} == -q ]]; then
+        shift
+        echo=:
+    fi
+
+    local need_git_dir=yes global=( )
+    while [[ ${#} -gt 0 && ${1} == -* ]]; do
+        global+=( "${1}" )
+        [[ ${1} == --git-dir=* ]] && need_git_dir=
+        shift
+    done
+    [[ ${1} != clone && -n ${need_git_dir} ]] && global+=( --git-dir="$(scm_get_var CHECKOUT_TO)" )
+
+    ${echo} git "${global[@]}" "${@}" >&2
+    GIT_PAGER=cat git "${global[@]}" "${@}" || die_unless_nonfatal "git ${1} failed"
+}
+
+scm-git_do_appraise() {
+    [[ $(scm_get_var REVISION) == _ ]] && die "$(scm_var_name REVISION) is _, but was not filled in by a submodule declaration"
+
+    local dir=$(scm_get_var CHECKOUT_TO)
+
+    if ! nonfatal scm-git_git -q rev-parse 2>/dev/null; then
+        echo "${dir} is not a git checkout"
+        return 3
+    fi
+
+    if [[ -n $(scm_get_var REVISION) ]]; then
+        if [[ -z $(nonfatal scm-git_git -q cat-file -t $(scm_get_var REVISION) 2>/dev/null) ]]; then
+            echo "$(scm_get_var REVISION) is not present in ${dir}"
+            return 1
+        elif [[ $(scm-git_git -q cat-file -t $(scm_get_var REVISION)) == commit ]]; then
+            if [[ -n $(scm_get_var BRANCH) ]] && ! scm-git_git -q rev-list "refs/heads/$(scm_get_var BRANCH)" \
+                    | grep -Fx $(scm_get_var REVISION) >/dev/null; then
+                echo "revision $(scm_get_var REVISION) is not part of branch $(scm_get_var BRANCH) of ${dir}"
+                return 1
+            fi
+            return 2
+        else
+            die "$(scm_get_var REVISION) is not a commit in ${dir}"
+        fi
+    fi
+
+    local origin=$(scm-git_git -q config remote.origin.url)
+    [[ -n ${origin} ]] || die "could not determine origin URL for ${dir}"
+    if [[ ${origin} != $(scm_get_var REPOSITORY) ]]; then
+        echo "${dir} is a clone of ${origin}, but wanted $(scm_get_var REPOSITORY)"
+        return 1
+    fi
+
+    if [[ -n $(scm_get_var TAG) ]]; then
+        if [[ -n $(scm-git_git -q for-each-ref "refs/tags/$(scm_get_var TAG)") ]]; then
+            if [[ -n $(scm_get_var BRANCH) ]] && ! scm-git_git -q rev-list "refs/heads/$(scm_get_var BRANCH)" \
+                    | grep -Fx $(scm-git_git -q rev-parse "refs/tags/$(scm_get_var TAG)^{commit}") >/dev/null; then
+                echo "tag $(scm_get_var TAG) is not part of branch $(scm_get_var BRANCH) of ${dir}"
+                return 1
+            fi
+
+            local keys
+            scm_get_array GIT_TAG_SIGNING_KEYS keys
+            if [[ ${#keys[@]} -gt 0 ]]; then
+                local gpghome=$(mktemp -d -p "${TEMP}" gpg-XXXXXX)
+                [[ -n ${gpghome} ]] || die "mktemp failed"
+
+                cat >"${gpghome}/gpg" <<EOF
+#! /usr/bin/env bash
+$(HOME=${gpghome} declare -p HOME)
+$(gpg=$(type -P gpg); declare -p gpg)
+errors=\$("\${gpg}" --keyserver-options no-auto-key-retrieve "\${@}" 2>&1 >/dev/null) && exit
+status=\${?}
+echo "\${errors}" >&2
+exit \${status}
+EOF
+                [[ ${?} -eq 0 ]] || die "create gpg wrapper failed"
+                chmod +x "${gpghome}/gpg" || die "chmod +x gpg wrapper failed"
+
+                PATH=${gpghome}:${PATH} gpg --import "${keys[@]}" || die "gpg --import ${keys[*]} failed"
+                PATH=${gpghome}:${PATH} scm-git_git -q verify-tag "$(scm_get_var TAG)" >/dev/null
+            fi
+
+            return 2
+        else
+            echo "${dir} does not contain the tag $(scm_get_var TAG)"
+            return 1
+        fi
+    fi
+
+    if [[ -n $(scm_get_var BRANCH) && -z $(scm-git_git -q for-each-ref "refs/heads/$(scm_get_var BRANCH)") ]]; then
+        echo "${dir} does not contain the branch $(scm_get_var BRANCH)"
+        return 1
+    fi
+
+    return 0
+}
+
+scm-git_do_resolve_externals() {
+    local errors=( )
+    local submodules=( $(scm_get_var EXTERNAL_REFS) ) idx
+
+    local revspec=$(
+        if [[ -n $(scm_get_var TAG) ]]; then
+            echo refs/tags/$(scm_get_var TAG)
+        elif [[ -n $(scm_get_var REVISION) ]]; then
+            scm_get_var REVISION
+        else
+            echo refs/heads/$(scm_get_var BRANCH)
+            fi)
+    local gitmodules=$(nonfatal scm-git_git -q rev-parse -q --verify ${revspec}:.gitmodules 2>/dev/null)
+
+    local entry name value submodule revision dir fulldir
+    [[ -n ${gitmodules} ]] && while read -r -d $'\0' entry; do
+        name=${entry%%$'\n'*}
+        value=${entry#*$'\n'}
+        [[ ${name} == submodule.*.path ]] || continue
+        submodule=${name#submodule.}
+        submodule=${submodule%.path}
+
+        dir=$(scm_trim_slashes -leading -trailing "${value}")
+        [[ -n ${dir} ]] || die ".gitmodules key ${name} for ${SCM_THIS:-primary repository} is empty or contains only slashes"
+        fulldir=$(scm_get_var UNPACK_TO)/${dir}
+
+        revision=$(scm-git_git -q ls-tree -z ${revspec} "${dir}")
+        [[ -n ${revision} ]] || die "Could not find a submodule commit reference at ${dir} in ${SCM_THIS:-primary repository}"
+        revision=${revision%%$'\t'*}
+        [[ ${revision} == *" commit "* ]] || die "Tree entry for ${dir} does not reference a commit object for submodule in ${SCM_THIS:-primary repository}"
+        revision=${revision##* }
+
+        for idx in ${!submodules[@]}; do
+            if [[ ${submodules[${idx}]} == ${dir}:* ]]; then
+                local that=${submodules[${idx}]##*:}
+                if [[ -n ${that} ]]; then
+                    local got
+
+                    got=$(SCM_THIS=${that} scm_get_var UNPACK_TO)
+                    [[ ${got} == ${fulldir} ]] \
+                        || errors+=( "$(SCM_THIS=${that} scm_var_name UNPACK_TO) is ${got}, but wanted ${fulldir}" )
+
+                    got=$(SCM_THIS=${that} scm_get_var REVISION)
+                    if [[ ${got} == _ ]]; then
+                        SCM_THIS=${that} scm_set_var REVISION "${revision}"
+                    else
+                        [[ ${got} == ${revision} ]] \
+                            || errors+=( "$(SCM_THIS=${that} scm_var_name REVISION) is ${got:-unset}, but wanted ${revision:-unset}" )
+                    fi
+
+                fi
+                unset submodules[${idx}]
+                continue 2
+            fi
+        done
+
+        errors+=( "no repository declared for submodule ${dir}" )
+    done < <(scm-git_git -q config --file <(scm-git_git -q cat-file blob ${gitmodules}) --list --null)
+
+    if [[ -n ${!submodules[@]} ]]; then
+        for idx in ${!submodules[@]}; do
+            errors+=( "${submodules[${idx}]%:*} does not match any submodule" )
+        done
+    fi
+
+    if [[ ${#errors[@]} -gt 0 ]]; then
+        local error
+        for error in "${errors[@]}"; do
+            eerror "${error}"
+        done
+        die "$(scm_var_name EXTERNAL_REFS) is not compatible with actual submodule declarations in the repository"
+    fi
+}
+
+scm-git_do_checkout() {
+    scm-git_git clone --bare "$(scm_get_var REPOSITORY)" "$(scm_get_var CHECKOUT_TO)"
+    scm-git_git config remote.origin.url "$(scm_get_var REPOSITORY)"
+    scm-git_git gc --auto
+}
+
+scm-git_do_update() {
+    local old_origin=$(scm-git_git -q config remote.origin.url)
+    [[ -n ${old_origin} ]] || die "could not determine origin URL for $(scm_get_var CHECKOUT_TO)"
+    if [[ ${old_origin} != $(scm_get_var REPOSITORY) ]]; then
+        scm-git_git config remote.origin.url "$(scm_get_var REPOSITORY)"
+        eval "$(scm-git_git -q for-each-ref --shell --format "scm-git_git update-ref -d %(refname)" refs/{heads,tags}/\*)"
+    fi
+
+    local branch=$(scm_get_var BRANCH)
+    scm-git_git fetch -f -u origin "refs/heads/${branch:-*}:refs/heads/${branch:-*}"
+    scm-git_git gc --auto
+    [[ -n ${branch} ]] && scm_set_array FETCHED_BRANCHES "${branch}"
+}
+
+scm-git_do_revision() {
+    scm-git_git -q rev-parse $(
+        if [[ -n $(scm_get_var TAG) ]]; then
+            echo refs/tags/$(scm_get_var TAG)
+        elif [[ -n $(scm_get_var REVISION) ]]; then
+            scm_get_var REVISION
+        else
+            echo refs/heads/$(scm_get_var BRANCH)
+        fi)
+}
+
+scm-git_do_unpack() {
+    local git_dir="$(scm_get_var UNPACK_TO)/.git"
+    if [[ -n "${SCM_THIS}" ]]; then
+        # If SCM_THIS is set, that means we're dealing with a submodule.
+        # Submodule are not supposed to have their .git folder inside them.
+        # Instead, they are supposed to be cloned with a separate git dir which
+        # is inside the .git/modules folder from the primary repository.
+        # .git inside the submodule then becomes a file pointing to that location.
+        local gitmodules_dir="${SCM_UNPACK_TO}/.git/modules"
+        # The path inside of the modules dir is the path relative to the primary repository
+        local path="$(scm_get_var UNPACK_TO)"
+        path=${path#${SCM_UNPACK_TO%/}/}
+        git_dir="${gitmodules_dir}/${path}"
+        edo mkdir -p "$(dirname "${git_dir}")"
+        scm-git_git clone -s -n "$(scm_get_var CHECKOUT_TO)" "$(scm_get_var UNPACK_TO)" --separate-git-dir "${git_dir}"
+    else
+        scm-git_git clone -s -n "$(scm_get_var CHECKOUT_TO)" "$(scm_get_var UNPACK_TO)"
+    fi
+    scm-git_git -q --git-dir="${git_dir}" config advice.detachedhead false
+    scm-git_git --git-dir="${git_dir}" --work-tree="$(scm_get_var UNPACK_TO)" checkout -f $(
+        if [[ -n $(scm_get_var TAG) ]]; then
+            echo refs/tags/$(scm_get_var TAG)
+        elif [[ -n $(scm_get_var REVISION) ]]; then
+            scm_get_var REVISION
+        else
+            [[ -n $(scm-git_git -q --git-dir="${git_dir}" for-each-ref "refs/heads/$(scm_get_var BRANCH)") ]] \
+                || echo -b $(scm_get_var BRANCH) refs/remotes/origin/$(scm_get_var BRANCH)
+        fi) --
+}
+

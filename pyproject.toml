@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pie-porting"
+version = "0.1.0"
+description = "Porting assistant for translating Exheres packages into Fedora RPM scaffolds"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "PIE contributors" }]
+dependencies = []
+
+[project.scripts]
+paludis-pie = "pie.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pie"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,93 @@
+# Copyright 2015 Kylie McClain <somasis@exherbo.org>
+# Distributed under the terms of the GNU General Public License v2
+
+# gitlab.exlib - Sets correct DOWNLOADS, HOMEPAGE, etc. for projects
+# on GitLab hosted sites
+#
+# This doesn't just apply to projects on gitlab.com; any GitLab
+# instance is supported as long as you set the correct prefix
+
+# For untagged revisions, use `rev=`. For tagged revisions, use `tag=`.
+# For any other sort of git ref, use `ref=`. You can use `ref=` for tags
+# and for untagged revisions as well, but it's more descriptive for the
+# reader to just use `rev=` and `tag=`.
+
+myexparam prefix='https://gitlab.com'
+myexparam user="${MY_PN:-${PN}}"
+myexparam subgroup=
+myexparam pn="${MY_PN:-${PN}}"
+myexparam pv="${MY_PV:-${PV}}"
+myexparam pnv=$(exparam pn)-$(exparam pv)
+
+myexparam ref=
+myexparam -b new_download_scheme=false
+myexparam rev= # only use for untagged revisions
+myexparam tag="${MY_PV:-${PV}}"
+
+# GitLab also provides zip, tar.bz2, tar...
+myexparam suffix=tar.gz
+
+if [[ -n $(exparam subgroup) ]]; then
+    HOMEPAGE="$(exparam prefix)/$(exparam user)/$(exparam subgroup)/$(exparam pn)"
+else
+    HOMEPAGE="$(exparam prefix)/$(exparam user)/$(exparam pn)"
+fi
+
+[[ $(exparam prefix) == 'https://gitlab.com' ]] && REMOTE_IDS+=" gitlab:$(exparam user)/$(exparam pn)"
+
+type=tag
+
+if ever is_scm;then
+    type=scm
+elif [[ -n $(exparam ref) ]];then
+    type=ref
+elif [[ -n $(exparam rev) ]];then
+    type=rev
+fi
+
+case "$type" in
+    scm)
+        myexparam branch=
+        exparam -v SCM_BRANCH branch
+
+        GITLAB_TYPE=scm
+        SCM_REPOSITORY="${HOMEPAGE}.git"
+        require scm-git
+    ;;
+    ref|rev|tag)
+        [[ "$type" == tag ]] && myexparam tag && ref=$(exparam tag)
+        [[ "$type" == ref ]] && myexparam ref && ref=$(exparam ref)
+        [[ "$type" == rev ]] && myexparam rev && ref=$(exparam rev)
+        if exparam -b new_download_scheme; then
+            DOWNLOADS="${HOMEPAGE}/-/archive/${ref}/$(exparam pn)-${ref}.$(exparam suffix) -> $(exparam pnv).$(exparam suffix)"
+        else
+            DOWNLOADS="${HOMEPAGE}/repository/archive.$(exparam suffix)?ref=${ref} -> $(exparam pnv).$(exparam suffix)"
+        fi
+        GITLAB_TYPE=ref
+        GITLAB_PN=$(exparam pn)
+        GITLAB_REF=${ref}
+    ;;
+esac
+
+export_exlib_phases src_unpack
+
+gitlab_src_unpack() {
+    if [[ "${GITLAB_TYPE}" == scm ]];then
+        scm_src_unpack
+    else
+        default
+    fi
+
+    # only set WORK if it hasn't been set away from the default value
+    if [[ "${GITLAB_TYPE}" == ref && "${WORK}" == "${WORKBASE}"/"${PNV}" ]];then
+        WORK=( "${WORKBASE}"/${GITLAB_PN}* )
+        if [[ "${#WORK[*]}" -ne 1 ]];then
+            die "There shouldn't be more than one directory in the downloaded archive. You might need to redownload the distfile."
+        elif [[ ! -d "${WORK}" ]];then
+            die "${WORK} does not exist."
+        else
+            WORK=${WORK[0]}
+        fi
+    fi
+}
+

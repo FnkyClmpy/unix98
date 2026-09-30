@@ -1,0 +1,214 @@
+# Copyright 2008, 2009 Bo Ørsted Andresen
+# Copyright 2008, 2009 Mike Kelly
+# Copyright 2009, 2013 David Leverton
+# Distributed under the terms of the GNU General Public License v2
+#
+# Thorough documentation can be found at:
+#   https://exherbo.org/docs/eapi/alternatives.html
+#
+
+# If your package provides pkg_postinst or pkg_prerm phases, you need to be
+# sure you explicitly run alternatives_pkg_{postinst,prerm} where appropriate.
+
+ALTERNATIVES_DIR="/etc/env.d/alternatives"
+
+DEPENDENCIES="
+    install:
+        app-admin/eclectic[>=2.0.13]"
+
+# alternatives_for alternative provider importance source target [ source target [...]]
+alternatives_for() {
+    illegal_in_global_scope
+
+    echo alternatives_for "${@}"
+
+    (( $# >= 5 )) && (( ($#-3)%2 == 0)) || die "${FUNCNAME} requires exactly 3+N*2 arguments where N>=1"
+    local x dupl alternative=${1} provider=${2} importance=${3} index unique src target ret=0
+    shift 3
+
+    # make sure importance is a signed integer
+    if [[ -n ${importance} ]] && ! [[ ${importance} =~ ^[0-9]+(\.[0-9]+)*$ ]]; then
+        eerror "Invalid importance (${importance}) detected"
+        ((ret++))
+    fi
+
+    [[ -d "${IMAGE}${ALTERNATIVES_DIR}/${alternative}/${provider}" ]] || dodir "${ALTERNATIVES_DIR}/${alternative}/${provider}"
+
+    # keep track of provided alternatives for use in pkg_{postinst,prerm}. keep a mapping between importance and
+    # provided alternatives and make sure the former is set to only one value
+    if ! has "${alternative}:${provider}" "${ALTERNATIVES_PROVIDED[@]}"; then
+        index=${#ALTERNATIVES_PROVIDED[@]}
+        ALTERNATIVES_PROVIDED+=( "${alternative}:${provider}" )
+        ALTERNATIVES_IMPORTANCE[index]=${importance}
+        [[ -n ${importance} ]] && echo "${importance}" > "${IMAGE}${ALTERNATIVES_DIR}/${alternative}/${provider}/_importance"
+    else
+        for((index=0;index<${#ALTERNATIVES_PROVIDED[@]};index++)); do
+            if [[ ${alternative}:${provider} == ${ALTERNATIVES_PROVIDED[index]} ]]; then
+                if [[ -n ${ALTERNATIVES_IMPORTANCE[index]} ]]; then
+                    if [[ -n ${importance} && ${ALTERNATIVES_IMPORTANCE[index]} != ${importance} ]]; then
+                        eerror "Differing importance (${ALTERNATIVES_IMPORTANCE[index]} != ${importance}) detected"
+                        ((ret++))
+                    fi
+                else
+                    ALTERNATIVES_IMPORTANCE[index]=${importance}
+                    [[ -n ${importance} ]] && echo "${importance}" > "${IMAGE}${ALTERNATIVES_DIR}/${alternative}/${provider}/_importance"
+                fi
+            fi
+        done
+    fi
+
+    while (( $# >= 2 )); do
+        src=${1//+(\/)/\/}; target=${2//+(\/)/\/}
+        shift 2
+        if [[ ${src} != /* ]]; then
+            eerror "Source path must be absolute, but got ${src}"
+            ((ret++))
+            continue
+        fi
+
+        local reltarget= dir=${ALTERNATIVES_DIR}/${alternative}/${provider}${src%/*}
+        while [[ -n ${dir} ]]; do
+            reltarget+=../
+            dir=${dir%/*}
+        done
+
+        reltarget=${reltarget%/}
+        [[ ${target} == /* ]] || reltarget+=${src%/*}/
+        reltarget+=${target}
+        dodir "${ALTERNATIVES_DIR}/${alternative}/${provider}${src%/*}"
+        # alip: careful here, $src may be a dangling symbolic link,
+        # and we are not allowed to pass an empty string to esandbox allow.
+        src_real=$(readlink -f "${src}")
+        test -n "${src_real}" && esandbox allow "${src_real}" || esandbox allow "${src}"
+        dosym "${reltarget}" "${ALTERNATIVES_DIR}/${alternative}/${provider}${src}"
+        test -n "${src_real}" && esandbox disallow "${src_real}" || esandbox disallow "${src}"
+
+        # say ${IMAGE}/sbin/init exists and links to /bin/systemd (which doesn't exist yet)
+        # the -e test will fail, so check for -L also
+        if [[ -e ${IMAGE}${src} || -L ${IMAGE}${src} ]]; then
+            local fulltarget=${target}
+            [[ ${fulltarget} != /* ]] && fulltarget=${src%/*}/${fulltarget}
+            if [[ -e ${IMAGE}${fulltarget} || -L ${IMAGE}${fulltarget} ]]; then
+                eerror "${src} defined as provider for ${fulltarget}, but both already exist in \${IMAGE}"
+                ((ret++))
+                continue
+            else
+                edo mv "${IMAGE}${src}" "${IMAGE}${fulltarget}"
+            fi
+        fi
+    done
+
+    [[ ${ret} -eq 0 ]] || die "Errors detected for ${provider}, provided for ${alternative}"
+}
+
+export_exlib_phases pkg_postinst pkg_prerm
+
+cleanup_old_alternatives_module() {
+    illegal_in_global_scope
+
+    local alt=${1} old_module="${ROOT}/usr/share/eclectic/modules/${alt}.eclectic"
+    if [[ -f "${old_module}" && "$(source "${old_module}" &>/dev/null; echo "${ALTERNATIVE}")" == "${alt}" ]]; then
+        local version="$(source "${old_module}" &>/dev/null; echo "${VERSION}")"
+        if [[ "${version}" == "0.1" || "${version}" == "20080924" ]]; then
+            echo rm "${old_module}"
+            rm "${old_module}" || eerror "rm ${old_module} failed"
+        fi
+    fi
+}
+
+alternatives_pkg_postinst() {
+    illegal_in_global_scope
+
+    local a alt alt_description provider module_version="20090908" sanitized_alt
+    for a in "${ALTERNATIVES_PROVIDED[@]}"; do
+        alt="${a%:*}"
+        provider="${a#*:}"
+        if [[ ${alt} != _* ]]; then
+            [[ -f "${ROOT}/usr/share/eclectic/modules/auto/${alt}.eclectic" ]] || einfo "Creating alternatives module for ${alt}"
+            if [[ ! -d ${ROOT}/usr/share/eclectic/modules/auto ]]; then
+                install -d "${ROOT}"/usr/share/eclectic/modules/auto || eerror "Could not create eclectic modules dir"
+            fi
+            sanitized_alt="${alt//+/x}"
+            sanitized_alt="${sanitized_alt//=/x}"
+            sanitized_alt="${sanitized_alt//-/_}"
+            sanitized_alt="${sanitized_alt//./_}"
+            alt_description="ALTERNATIVES_${sanitized_alt}_DESCRIPTION"
+            alt_description=${!alt_description:-"Alternatives for ${alt}"}
+            cat > "${ROOT}/usr/share/eclectic/modules/auto/${alt}.eclectic" << EOF
+# This module was automatically generated by alternatives.exlib
+DESCRIPTION="${alt_description}"
+VERSION="${module_version}"
+MAINTAINER="eclectic@exherbo.org"
+ECLECTIC_MODULE_GROUP="Alternatives"
+
+ALTERNATIVE="${alt}"
+
+inherit alternatives
+EOF
+        fi
+
+        local -a args
+        if [[ ${alt} == _* ]]; then
+            args=( --best )
+        else
+            args=( "${provider}" )
+        fi
+        echo eclectic alternatives update "${alt}" "${args[@]}"
+        eclectic alternatives update "${alt}" "${args[@]}" || {
+            eerror eclectic alternatives update "${alt}" "${args[@]}" returned $?
+            exlogfailure
+        }
+
+        cleanup_old_alternatives_module ${alt}
+    done
+}
+
+alternatives_pkg_prerm() {
+    illegal_in_global_scope
+
+    local a alt provider p ignore
+    [[ -n ${REPLACED_BY_ID} ]] || ignore="--ignore"
+    for a in "${ALTERNATIVES_PROVIDED[@]}"; do
+        alt="${a%:*}"
+        provider="${a#*:}"
+        echo "Making sure ${alt} has a valid provider"
+        local -a args
+        if [[ ${alt} == _* ]]; then
+            args=( --best ${ignore} ${ignore:+"${provider}"} )
+        else
+            args=( ${ignore} "${provider}" )
+        fi
+        echo eclectic alternatives update "${alt}" "${args[@]}"
+        eclectic alternatives update "${alt}" "${args[@]}" && continue
+        case $? in
+            0) : ;;
+            2)
+                if [[ ${alt} != _* ]]; then
+                    einfo "Cleaning up unused alternatives module for ${alt}"
+                    echo rm "${ROOT}/usr/share/eclectic/modules/auto/${alt}.eclectic"
+                    rm "${ROOT}/usr/share/eclectic/modules/auto/${alt}.eclectic" ||
+                        eerror rm "${ROOT}/usr/share/eclectic/modules/auto/${alt}.eclectic" failed
+                fi
+                ;;
+            *)
+                eerror eclectic alternatives update "${alt}" "${args[@]}" returned $?
+                exlogfailure
+                ;;
+        esac
+    done
+}
+
+# List of alternatives descriptions
+#
+# Since packages that use alternatives write an alternatives module each time
+# they are installed, this can result in collisions between the DESCRIPTIONs
+# use for the different packages. As such, a list of custom descriptions for
+# providers is maintained here so that we can have it in one unified location.
+
+ALTERNATIVES_cc_DESCRIPTION="System-wide C compiler"
+ALTERNATIVES_cpp_DESCRIPTION="System-wide C pre-processor"
+ALTERNATIVES_cxx_DESCRIPTION="System-wide C++ compiler"
+ALTERNATIVES_python2_DESCRIPTION="Default python2 version"
+ALTERNATIVES_python3_DESCRIPTION="Default python3 version"
+ALTERNATIVES_python_DESCRIPTION="System-wide Python interpreter version"
+ALTERNATIVES_vi_DESCRIPTION="Default provider for the vi text editor"

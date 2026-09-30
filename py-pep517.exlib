@@ -1,0 +1,352 @@
+# Copyright 2022 Stanislav Sauvin <stanislav.sauvin@clever-cloud.com>
+# Distributed under the terms of the GNU General Public License v2
+#
+# This Exlib is *very* heavily inspired by setup-py.exlib and others.
+#
+# exparams:
+#   backend ( format: self-hosted or <backend> ) ( mandatory )
+#     If "self-hosted", package should provide its own installation backend.
+#     Else, will add <backend> as a build dependency.
+#   backend_version_spec ( format: e.g. "[>=1.2.3]" ) ( empty by default)
+#     A version specification for the backend, which gets added to the build
+#     dependency. For possible forms see
+#     https://paludis.exherbo.org/configuration/specs.html
+#   blacklist ( format: none or "a x.y" ) ( none by default )
+#     python abis that don't work with this package. "2" is implied, because
+#     python2 is dead and the needed build dependencies aren't available for
+#     python:2.7.
+#   entrypoints (deprecated, defaults to [ ] )
+#     Entrypoints (executable scripts) added by this package. When building
+#     multiple Python ABIs, only entrypoints from the last built ABI will be
+#     installed on the system (like in setup-py.exlib).
+#     It's not necessary anymore, deprecated and will be removed completely
+#     in the near future.
+#   python_opts ( format: "[foo][bar]" ) ( empty by default )
+#     Options that need to be enabled for dev-lang/python.
+#   test ( format: unittest, pytest or nose2 ) ( defaults to empty )
+#     If empty, no tests. If a supported test framework is set,
+#     we will run tests with it.
+#   multibuild ( defaults to true )
+#     Whether to allow the package to be installed for multiple python abis
+#     at the same time, or limit it to a single python abi.
+#     Setting multibuild=false is appropriate when a package only installs
+#     executables and private libraries. If multibuild=false, then setting
+#     entrypoints is not required.
+#   with_opt
+#       See python.exlib
+#   option_name
+#       See python.exlib
+#   work
+#       See easy-multibuild.exlib
+
+myexparam backend
+exparam -v BACKEND backend
+
+myexparam backend_version_spec=
+exparam -v BACKEND_VERSION_SPEC backend_version_spec
+
+myexparam blacklist=none
+exparam -v BLACKLIST blacklist
+if [[ ${BLACKLIST} == none ]] ; then
+    BLACKLIST=2
+else
+    BLACKLIST="2 ${BLACKLIST}"
+fi
+
+myexparam entrypoints=[ ]
+exparam -v ENTRYPOINTS entrypoints[@]
+
+myexparam python_opts=
+
+myexparam test=
+exparam -v TEST_FRAMEWORK test
+
+myexparam -b multibuild=true
+
+myexparam -b with_opt=false
+
+PY_PEP517_PYTHON_EXLIB_OPTS=(
+    blacklist="${BLACKLIST}"
+    python_opts="$(exparam python_opts)"
+    multibuild="$(exparam multibuild)"
+    with_opt="$(exparam with_opt)"
+)
+
+if exparam -b with_opt; then
+    myexparam option_name=python
+    PY_PEP517_PYTHON_EXLIB_OPTS+=( option_name=$(exparam option_name) )
+fi
+
+if exparam -b multibuild; then
+    myexparam work="${PNV}"
+    exparam -v PEP517_WORK work
+
+    PY_PEP517_PYTHON_EXLIB_OPTS+=(
+        multiunpack=true
+        work="${PEP517_WORK}"
+    )
+fi
+
+require python [ "${PY_PEP517_PYTHON_EXLIB_OPTS[@]}" ]
+
+export_exlib_phases src_prepare src_compile src_install src_test
+
+_py-pep517_print_possibly_optional_dep() {
+    [[ $# != 1 ]] \
+        && die "_py-pep517_print_possibly_optional_dep takes exactly one dependency argument, not $#"
+
+    local dependency_string=""
+    exparam -b with_opt && dependency_string+=" $(exparam option_name)? ( "
+    dependency_string+="${1}[python_abis:*(-)?]"
+    exparam -b with_opt && dependency_string+=" )"
+
+    echo "${dependency_string}"
+}
+
+# Use PEP-517-compliant libraries
+DEPENDENCIES="
+    build:
+        $(_py-pep517_print_possibly_optional_dep "dev-python/gpep517[>=18]")
+"
+
+# Handle build backend dependencies
+#  - If "self-hosted": this usually means we are installing an installation backend
+#    itself and that we do not depend on anything else. Do nothing.
+#  - If a backend explicitly matches: this means we need to add specific dependencies
+#    for this backend. For example, some backends may require the `wheel` package in
+#    order to build Python Wheels. Instead of adding the backend as a dependency, we
+#    use the ";;&" control operator and let the wildcard match handle it.
+#  - If any other backend name is provided (wildcard match): we add the backend as a
+#    build dependency.
+
+case ${BACKEND} in
+    self-hosted)
+        ;;
+    setuptools)
+        # `setuptools` python3 SLOT is `:0`
+        BACKEND_SLOT="0"
+
+        # `setuptools` requires `wheel` for builds
+        DEPENDENCIES+="
+            build:
+                $(_py-pep517_print_possibly_optional_dep "dev-python/wheel")
+        "
+        ;;&
+    *)
+        local backend_dependency="dev-python/${BACKEND}"
+
+        if [[ -n "${BACKEND_SLOT}" ]] ; then
+            backend_dependency+=":${BACKEND_SLOT}"
+        fi
+        if [[ -n "${BACKEND_VERSION_SPEC}" ]] ; then
+            backend_dependency+="${BACKEND_VERSION_SPEC}"
+        fi
+
+        DEPENDENCIES+="
+            build:
+                $(_py-pep517_print_possibly_optional_dep "${backend_dependency}")
+        "
+        ;;
+esac
+
+# Handle test framework dependencies
+
+if [[ -n ${TEST_FRAMEWORK} ]]; then
+    if [[ ${TEST_FRAMEWORK} != "unittest" ]]; then
+        DEPENDENCIES+="
+            test:
+                $(_py-pep517_print_possibly_optional_dep "dev-python/${TEST_FRAMEWORK}")
+        "
+    fi
+fi
+
+# Prepare
+
+if exparam -b multibuild; then
+    py-pep517_src_prepare() {
+        easy-multibuild_src_prepare
+    }
+    prepare_one_multibuild() {
+        py-pep517_prepare_one_multibuild
+    }
+else
+    py-pep517_src_prepare() {
+        py-pep517_prepare_one_multibuild
+    }
+fi
+
+py-pep517_prepare_one_multibuild() {
+    python_prepare_one_multibuild
+}
+
+# Compile
+
+if exparam -b multibuild; then
+    py-pep517_src_compile() {
+        easy-multibuild_src_compile
+    }
+    compile_one_multibuild() {
+        py-pep517_compile_one_multibuild
+    }
+else
+    py-pep517_src_compile() {
+        py-pep517_compile_one_multibuild
+    }
+fi
+
+py-pep517_compile_one_multibuild() {
+    local args=(
+        --wheel-dir dist
+        --output-fd 1
+    )
+
+    case ${BACKEND} in
+        setuptools)
+            local globbal_options=(
+                "${PY_PEP517_SRC_COMPILE_GLOBAL_PARAMS[@]}"
+            )
+            local opt
+            for opt in "${PY_PEP517_SRC_COMPILE_GLOBAL_OPTIONS[@]}"; do
+                globbal_options+=( $(option ${opt}) )
+            done
+            local build_options=(
+                "${PY_PEP517_SRC_COMPILE_BUILD_PARAMS[@]}"
+            )
+            local opt
+            for opt in "${PY_PEP517_SRC_COMPILE_BUILD_OPTIONS[@]}"; do
+                build_options+=( $(option ${opt}) )
+            done
+
+            local json_options=()
+            local old_IFS=${IFS}
+            IFS=,
+            if [[ ${#globbal_options[@]} -gt 0 ]]; then
+                local config_json=()
+                for opt in "${globbal_options[@]}"; do
+                    config_json+=( "\"${opt//\"/\\\"}\"" )
+                done
+                json_options+=( "\"--global-option\":[${config_json[*]}]" )
+            fi
+            if [[ ${#build_options[@]} -gt 0 ]]; then
+                local config_json=()
+                for opt in "${build_options[@]}"; do
+                    config_json+=( "\"${opt//\"/\\\"}\"" )
+                done
+                json_options+=( "\"--build-option\":[${config_json[*]}]" )
+            fi
+            if [[ ${#json_options[@]} -gt 0 ]]; then
+                args+=( --config-json "{${json_options[*]}}" )
+            fi
+            IFS=${old_IFS}
+        ;;
+    esac
+    edo ${PYTHON} -m gpep517 build-wheel "${args[@]}"
+}
+
+# Install
+
+if exparam -b multibuild; then
+    py-pep517_src_install() {
+        easy-multibuild_src_install
+    }
+    install_one_multibuild() {
+        py-pep517_install_one_multibuild
+    }
+else
+    py-pep517_src_install() {
+        py-pep517_install_one_multibuild
+    }
+fi
+
+# Helper function to install a wheel to the location passed as first argument.
+# Additional arguments are passed through to the actual install command.
+_py-pep517_install_wheel() {
+    illegal_in_global_scope
+
+    [[ ${#} -lt 1 ]] && die "${FUNCNAME} takes at least 1 argument"
+
+    local destdir="${1}"
+    shift
+
+    edo ${PYTHON} -m gpep517 install-wheel \
+        --destdir "${destdir}" \
+        --prefix  /usr/$(exhost --target) \
+        --overwrite \
+        "${@}" \
+        dist/*.whl
+}
+
+py-pep517_install_one_multibuild() {
+    # FIXME: There is a mess with dashes and underscores and Python packages
+    # poetry-core-$ver.tar.gw but poetry_core-*.whl
+
+    _py-pep517_install_wheel \
+        "${IMAGE}" \
+        --optimize all
+
+    emagicdocs
+}
+
+# Test
+
+if exparam -b multibuild; then
+    py-pep517_src_test() {
+        easy-multibuild_src_test
+    }
+    test_one_multibuild() {
+        py-pep517_test_one_multibuild
+    }
+else
+    py-pep517_src_test() {
+        py-pep517_test_one_multibuild
+    }
+fi
+
+py-pep517_test_one_multibuild() {
+    case ${TEST_FRAMEWORK} in
+        nose2)
+            py-pep517_run_tests_nose2
+            ;;
+        pytest)
+            py-pep517_run_tests_pytest
+            ;;
+        unittest)
+            py-pep517_run_tests_unittest
+            ;;
+        '')
+            ;;
+        *)
+            die "Test framework ${TEST_FRAMEWORK} is not implemented."
+    esac
+}
+
+# Test frameworks
+
+py-pep517_run_tests_unittest() {
+    _py-pep517_install_wheel pep517_tests_${PN}
+
+    PYTHONPATH="${PWD}/pep517_tests_${PN}/usr/$(exhost --target)/lib/python$(python_get_abi)/site-packages/" edo ${PYTHON} -m unittest "${UNITTEST_ARGS[@]}"
+}
+
+py-pep517_run_tests_pytest() {
+    PYTEST_SKIP_LIST=()
+    _py-pep517_install_wheel pep517_tests_${PN}
+
+    if [[ -n ${PYTEST_SKIP} ]]; then
+        PYTEST_SKIP_ARG="not ${PYTEST_SKIP[0]}"
+        PYTEST_SKIP_TESTS=("${PYTEST_SKIP[@]:1}")
+        for test in "${PYTEST_SKIP_TESTS[@]}"; do
+            PYTEST_SKIP_ARG+=" and not $test"
+        done
+        PYTEST_SKIP_LIST+=("-k" "${PYTEST_SKIP_ARG}")
+    fi
+
+    PYTHONPATH="${PWD}/pep517_tests_${PN}/usr/$(exhost --target)/lib/python$(python_get_abi)/site-packages/" edo ${PYTHON} -m pytest "${PYTEST_SKIP_LIST[@]}" "${PYTEST_PARAMS[@]}"
+}
+
+py-pep517_run_tests_nose2() {
+    _py-pep517_install_wheel pep517_tests_${PN}
+
+    PYTHONPATH="${PWD}/pep517_tests_${PN}/usr/$(exhost --target)/lib/python$(python_get_abi)/site-packages/" edo ${PYTHON} -m nose2 "${NOSE2_ARGS[@]}"
+}
+

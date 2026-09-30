@@ -1,0 +1,43 @@
+# Copyright 2020 Marc-Antoine Perennou
+# Distributed under the terms of the GNU General Public License v2
+
+rust_arch_name() {
+    case ${1} in
+        aarch64-unknown-linux-gnueabi)
+            echo aarch64-unknown-linux-gnu
+            ;;
+        aarch64-unknown-linux-musleabi)
+            echo aarch64-unknown-linux-musl
+            ;;
+        armv7-unknown-linux-gnueabihf)
+            echo armv7-unknown-linux-gnueabihf
+            ;;
+        i686-pc-linux-gnu)
+            echo i686-unknown-linux-gnu
+            ;;
+        i686-pc-linux-musl)
+            echo i686-unknown-linux-musl
+            ;;
+        x86_64-pc-linux-gnu)
+            echo x86_64-unknown-linux-gnu
+            ;;
+        x86_64-pc-linux-musl)
+            echo x86_64-unknown-linux-musl
+            ;;
+        "")
+            # If ${1} is empty, this most likely means we're called using exhost's output during
+            # metadata generation, silently return nothing and don't bail.
+            ;;
+        *)
+            die "Your cross compile target (${1}) isn't supported yet. Please submit a patch adding support for it."
+            ;;
+    esac
+}
+
+rust_build_arch_name() {
+    rust_arch_name $(exhost --build)
+}
+
+rust_target_arch_name() {
+    rust_arch_name $(exhost --target)
+}

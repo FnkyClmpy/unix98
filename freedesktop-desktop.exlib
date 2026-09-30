@@ -1,0 +1,46 @@
+# Copyright 2008 Saleem Abdulrasool <compnerd@compnerd.org>
+# Distributed under the terms of the GNU General Public License v2
+
+# This exlib updates the .desktop file cache about which .desktop file can handle which mimetype
+#   after the exheres was (un)installed
+#
+# You MUST require this exlib if and only if your exheres installs a .desktop file that contains
+#   a MimeType field.
+#
+# See also 'man 1 update-desktop-database'
+
+myexparam -b with_opt=false
+exparam -b with_opt && myexparam option_name='gui'
+
+export_exlib_phases pkg_postinst pkg_postrm
+
+freedesktop-desktop_is_desktop_file_utils() {
+    [[ "${CATEGORY}/${PN}" == 'dev-util/desktop-file-utils' ]]
+}
+
+if ! freedesktop-desktop_is_desktop_file_utils;then
+    exparam -b with_opt && opt="$(exparam option_name)? ( "
+    DEPENDENCIES="build: ${opt}dev-util/desktop-file-utils${opt:+ )}"
+fi
+
+
+freedesktop-desktop_update_desktop_database() {
+    illegal_in_global_scope
+
+    exparam -b with_opt && ! optionq "$(exparam option_name)" && return 0
+    nonfatal edo /usr/$(exhost --build)/bin/update-desktop-database -q "${ROOT}"/usr/share/applications ||
+        eerror "update-desktop-database failed"
+}
+
+freedesktop-desktop_pkg_postrm() {
+    illegal_in_global_scope
+
+    freedesktop-desktop_update_desktop_database
+}
+
+freedesktop-desktop_pkg_postinst() {
+    illegal_in_global_scope
+
+    freedesktop-desktop_update_desktop_database
+}
+

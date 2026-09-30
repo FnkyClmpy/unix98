@@ -1,0 +1,44 @@
+# Copyright 2010-2015 Wulf C. Krueger <philantrop@exherbo.org>
+# Copyright 2015 Kylie McClain <somasis@exherbo.org>
+# Distributed under the terms of the GNU General Public License v2
+
+myexparam systemd_files=[ "${FILES}"/systemd ]
+myexparam systemd_user_files=[ ]
+myexparam systemd_tmpfiles=[ ]
+myexparam systemd_user_tmpfiles=[ ]
+
+export SYSTEMDSYSTEMUNITDIR="/usr/$(exhost --target)/lib/systemd/system"
+export SYSTEMDUSERUNITDIR="/usr/$(exhost --target)/lib/systemd/user"
+export SYSTEMDTMPFILESDIR="/usr/$(exhost --target)/lib/tmpfiles.d"
+export SYSTEMDUSERTMPFILESDIR="/usr/share/user-tmpfiles.d"
+
+install_systemd_files() {
+    exparam -v systemd_files systemd_files[@]
+    exparam -v systemd_user_files systemd_user_files[@]
+    exparam -v systemd_tmpfiles systemd_tmpfiles[@]
+    exparam -v systemd_user_tmpfiles systemd_user_tmpfiles[@]
+
+    [[ -z "${systemd_files}" ]] || systemd_files_doins "${SYSTEMDSYSTEMUNITDIR}" "${systemd_files[@]}"
+    [[ -z "${systemd_user_files}" ]] || systemd_files_doins "${SYSTEMDUSERUNITDIR}" "${systemd_user_files[@]}"
+    [[ -z "${systemd_tmpfiles}" ]] || systemd_files_doins "${SYSTEMDTMPFILESDIR}" "${systemd_tmpfiles[@]}"
+    [[ -z "${systemd_user_tmpfiles}" ]] || systemd_files_doins "${SYSTEMDUSERTMPFILESDIR}" "${systemd_user_tmpfiles[@]}"
+}
+
+# systemd_files_doins <dir> [service files]: installs [service files] to <dir>
+systemd_files_doins() {
+    local service_file
+
+    insinto "${1}"
+    shift
+
+    for service_file in "$@"; do
+        if [[ -d "${service_file}" ]]; then
+            doins -r "${service_file}"/*
+        elif [[ -f "${service_file}" ]]; then
+            doins "${service_file}"
+        else
+            doins "${FILES}"/systemd/"${service_file}"
+        fi
+    done
+}
+

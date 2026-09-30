@@ -1,0 +1,27 @@
+# Copyright 2009 Ingmar Vanhassel
+# Distributed under the terms of the GNU General Public License v2
+
+myexparam -b alpha=false
+myexparam subdir=
+myexparam suffix
+
+myexparam pn=${MY_PN:-${PN}}
+myexparam pv=${MY_PV:-${PV}}
+myexparam pnv=${MY_PNV:-$(exparam pn)-$(exparam pv)}
+
+HOMEPAGE="https://www.gnu.org/software/$(exparam pn)/"
+if exparam -b alpha; then
+    DOWNLOADS="http://alpha.gnu.org/pub/gnu/"
+else
+    DOWNLOADS="mirror://gnu/"
+fi
+DOWNLOADS+="$(exparam pn)/"
+[[ -z $(exparam subdir) ]] || DOWNLOADS+=$(exparam subdir)/
+DOWNLOADS+="$(exparam pnv).$(exparam suffix)"
+WORK="${WORKBASE}/$(exparam pnv)"
+
+UPSTREAM_DOCUMENTATION="
+https://www.gnu.org/software/$(exparam pn)/manual/$(exparam pn).html   [[ lang = en description = [ $(exparam pn) manual, HTML ] ]]
+https://www.gnu.org/software/$(exparam pn)/manual/$(exparam pn).pdf    [[ lang = en description = [ $(exparam pn) manual, PDF  ] ]]
+"
+

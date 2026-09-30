@@ -1,0 +1,412 @@
+# Copyright 2008-2012 Bo Ørsted Andresen <zlin@exherbo.org>
+# Distributed under the terms of the GNU General Public License v2
+# Based in part upon 'cmake-utils.eclass' from Gentoo, which is:
+#     Copyright 1999-2007 Gentoo Foundation
+
+# The cmake exlib contains functions that make creating ebuilds for
+# cmake-based packages easy.
+# Its main features are support of out-of-source builds as well as in-source
+# builds and an implementation of the well-known option_enable and option_with
+# functions for CMake.
+
+myexparam api=2
+myexparam -b out_of_source=true
+myexparam cmake_minimum_version=3.29.0
+myexparam -b ninja=false
+
+if [[ $(exparam api) -ne 2 ]] ; then
+    die "cmake api $(exparam api) is unsupported"
+fi
+
+if exparam -b ninja; then
+    require ninja
+fi
+
+if [[ -n ${CMAKE_SILENT} ]]; then
+    ewarn "CMAKE_SILENT is deprecated. Please, use CMAKE_NO_VERBOSE instead."
+    ewarn "https://cmake.org/cmake/help/latest/envvar/CMAKE_NO_VERBOSE.html"
+fi
+
+if [[ -n ${CMAKE_NO_COLOR} ]]; then
+    ewarn "CMAKE_NO_COLOR is deprecated. Please, use CMAKE_COLOR_DIAGNOSTICS=OFF instead."
+    ewarn "https://cmake.org/cmake/help/latest/envvar/CMAKE_COLOR_DIAGNOSTICS.html"
+fi
+
+# CMake builds itself using a bootstrapped cmake, in order to re-use cmake_src_configure in the
+# CMake exheres we need to avoid the circular dependency which this would create
+if [[ "${CATEGORY}/${PN}" != "sys-devel/cmake" ]]; then
+    DEPENDENCIES="
+        build:
+            sys-devel/cmake[>=$(exparam cmake_minimum_version)]
+    "
+fi
+
+export_exlib_phases src_configure src_compile src_install src_test
+
+CMAKE_BINARY=${CMAKE_BINARY:-cmake}
+CTEST_BINARY=${CTEST_BINARY:-ctest}
+CMAKE_SOURCE=${CMAKE_SOURCE:-${WORK}}
+
+if exparam -b out_of_source; then
+    WORK=${WORKBASE}/build
+
+    export_exlib_phases src_unpack src_prepare
+
+    cmake_src_unpack() {
+        default
+        if [[ $(type -t scm_src_unpack) == function ]]; then
+            scm_src_unpack
+        fi
+        edo mkdir -p "${WORK}"
+    }
+
+    cmake_src_prepare() {
+        edo cd "${CMAKE_SOURCE}"
+        default
+    }
+fi
+
+# Similar to option_enable for cmake. A few examples:
+#   `cmake_build Foo`        -> foo     ? -DBUILD_Foo:BOOL=TRUE  : -DBUILD_Foo:BOOL=FALSE
+#   `cmake_build FOO`        -> foo     ? -DBUILD_FOO:BOOL=TRUE  : -DBUILD_FOO:BOOL=FALSE
+#   `cmake_build foo Bar`    -> foo     ? -DBUILD_Bar:BOOL=TRUE  : -DBUILD_Bar:BOOL=FALSE
+#   `cmake_build Foo Foo`    -> Foo     ? -DBUILD_Foo:BOOL=TRUE  : -DBUILD_Foo:BOOL=FALSE
+#   `cmake_build foo:bar Bar -> foo:bar ? -DBUILD_Bar:BOOL=TRUE  : -DBUILD_Bar:BOOL=FALSE
+cmake_build() {
+    illegal_in_global_scope
+
+    _cmake_option BUILD "$@"
+}
+
+# Note: since this is for disables the logic is reversed. For this to work you need at least cmake 2.8.6:
+#   `cmake_disable_find Foo -> foo     ? -DCMAKE_DISABLE_FIND_PACKAGE_Foo:BOOL=FALSE : -DCMAKE_DISABLE_FIND_PACKAGE_Foo:BOOL=TRUE
+cmake_disable_find() {
+    illegal_in_global_scope
+
+    _cmake_option CMAKE_DISABLE_FIND_PACKAGE \!"$@"
+}
+
+#   `cmake_enable Foo        -> foo     ? -DENABLE_Foo:BOOL=TRUE : -DENABLE_Foo:BOOL=FALSE
+cmake_enable() {
+    illegal_in_global_scope
+
+    _cmake_option ENABLE "$@"
+}
+
+#   `cmake_have Foo          -> foo     ? -DHAVE_Foo:BOOL=TRUE   : -DHAVE_Foo:BOOL=FALSE
+cmake_have() {
+    illegal_in_global_scope
+
+    _cmake_option HAVE "$@"
+}
+
+#   `cmake_option Foo            -> foo     ? -DFoo:BOOL=TRUE        : -DFoo:BOOL=FALSE
+#   `cmake_option bar FOO_Bar    -> bar     ? -DFOO_Bar:BOOL=TRUE    : -DFOO_Bar:BOOL=FALSE
+cmake_option() {
+    illegal_in_global_scope
+
+    _cmake_option '' "$@"
+}
+
+#   `cmake_use Foo          -> foo     ? -DUSE_Foo:BOOL=TRUE   : -DUSE_Foo:BOOL=FALSE
+cmake_use() {
+    illegal_in_global_scope
+
+    _cmake_option USE "$@"
+}
+
+#   `cmake_want Foo          -> foo     ? -DWANT_Foo:BOOL=TRUE   : -DWANT_Foo:BOOL=FALSE
+cmake_want() {
+    illegal_in_global_scope
+
+    _cmake_option WANT "$@"
+}
+
+#   `cmake_with Foo          -> foo     ? -DWITH_Foo:BOOL=TRUE   : -DWITH_Foo:BOOL=FALSE
+cmake_with() {
+    illegal_in_global_scope
+
+    _cmake_option WITH "$@"
+}
+
+# Called when cross compiling to define CMAKE_SYSTEM_NAME so that CMAKE_CROSSCOMPILING
+# gets enabled too (this happens even if the resulting value is the same as CMAKE_HOST_SYSTEM_NAME)
+# https://cmake.org/cmake/help/latest/variable/CMAKE_CROSSCOMPILING.html
+_cmake_system_name_for_arch() {
+    case "$(exhost --target)" in
+        *-*-linux-*)
+            echo "Linux"
+            ;;
+        *-*-windows-*)
+            echo "Windows"
+            ;;
+        *)
+            die "Your cross compile target isn't supported by the exheres yet. Please submit a patch adding support."
+        ;;
+    esac
+}
+
+# Calls cmake with default arguments. If CMAKE_COLOR_DIAGNOSTICS is set to OFF it disables colours.
+# If CMAKE_NO_VERBOSE is set it prevents setting VERBOSE=1 on CMake execution.
+# If you use CMAKE_NO_VERBOSE you MUST unset it and rebuild before posting a build log.
+# It also respects the following variables similarly to default_src_configure and econf:
+#    CMAKE_SRC_CONFIGURE_PARAMS
+#    CMAKE_SRC_CONFIGURE_OPTION_BUILDS
+#    CMAKE_SRC_CONFIGURE_OPTION_DISABLE_FINDS
+#    CMAKE_SRC_CONFIGURE_OPTION_ENABLES
+#    CMAKE_SRC_CONFIGURE_OPTION_HAVES
+#    CMAKE_SRC_CONFIGURE_OPTIONS
+#    CMAKE_SRC_CONFIGURE_OPTIONS_CUSTOM
+#    CMAKE_SRC_CONFIGURE_OPTION_USES
+#    CMAKE_SRC_CONFIGURE_OPTION_WANTS
+#    CMAKE_SRC_CONFIGURE_OPTION_WITHS
+#    CMAKE_SRC_CONFIGURE_TESTS
+# Additionally it supports a '--hates' parameter analog to the one in econf, which can be used to disable
+# some of the default options that are always passed to the cmake call. This should only be used if a
+# project does not accept a specific option and fails to build as a result of it being used.
+# Example: To block '-DCMAKE_BUILD_TYPE:STRING=None' pass '--hates=CMAKE_BUILD_TYPE' to ecmake.
+#          '--hates' can be passed directly or via CMAKE_SRC_CONFIGURE_PARAMS.
+ecmake() {
+    illegal_in_global_scope
+
+    local arg= default_args=() cmake_args=() hates=()
+
+    for arg in "${@}" ; do
+        case "${arg}" in
+            --hates=*) hates+=( "${arg#--hates=}" ) ;;
+            *) cmake_args+=( "${arg}" ) ;;
+        esac
+    done
+
+    if exparam -b ninja; then
+        cmake_args+=( "-GNinja" )
+    fi
+
+    # All default CMAKE_BUILD_TYPEs come with default CFLAGS, CXXFLAGS, which are *appended* to
+    # CMAKE_C_FLAGS, CMAKE_CXX_FLAGS if a given build type is used. Thus they override users' settings,
+    # and mustn't be used.
+    for arg in -DCMAKE_BUILD_TYPE:STRING='None'                                      \
+               -DCMAKE_C_FLAGS:STRING="${CFLAGS}"                                    \
+               -DCMAKE_CXX_FLAGS:STRING="${CXXFLAGS}"                                \
+               -DCMAKE_AR:PATH="${AR}"                                               \
+               -DCMAKE_RANLIB:PATH="${RANLIB}"                                       \
+               -DCMAKE_NM:PATH="${NM}"                                               \
+               -DCMAKE_C_COMPILER:PATH="${CC}"                                       \
+               -DCMAKE_CXX_COMPILER:PATH="${CXX}"                                    \
+               -DCMAKE_PKG_CONFIG_BIN=$(exhost --tool-prefix)pkg-config              \
+               -DCMAKE_INSTALL_PREFIX:PATH="${PREFIX:=/usr/$(exhost --target)}"      \
+               -DCMAKE_FIND_ROOT_PATH:PATH=${PREFIX:=/usr/$(exhost --target)}        \
+               -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM:STRING='NEVER'                    \
+               -DCMAKE_SYSTEM_PREFIX_PATH:PATH="${PREFIX:=/usr/$(exhost --target)}"  \
+               -DCMAKE_INSTALL_LIBDIR:STRING='lib'                                   \
+               -DCMAKE_INSTALL_DATAROOTDIR:PATH=/usr/share/ ; do
+        local parameter=${arg%%:*}
+        has ${parameter#-D} "${hates[@]}" || default_args+=( "${arg}" )
+    done
+
+    if ! exhost --is-native -q; then
+        local arch=$(exhost --target)
+        arch=${arch%%-*}
+        default_args+=(
+            "-DCMAKE_SYSTEM_NAME:STRING=$(_cmake_system_name_for_arch)"
+            "-DCMAKE_SYSTEM_PROCESSOR:STRING=${arch}"
+        )
+    fi
+
+    # CMake supports `VERBOSE` and `CMAKE_NO_VERBOSE` envvars since 3.14.
+    # User may set `CMAKE_NO_VERBOSE` in his shell or `/etc/paludis/bashrc`
+    # to suppress verbose output enforced by `cmake.exlib`
+    if [[ -z ${CMAKE_NO_VERBOSE} ]]; then
+        export VERBOSE=${VERBOSE:-1}
+    fi
+    # CMake supports `CMAKE_COLOR_DIAGNOSTICS` envvar since 3.24.
+    if [[ -z ${CMAKE_COLOR_DIAGNOSTICS} ]]; then
+        export CMAKE_COLOR_DIAGNOSTICS=ON
+    fi
+    edo ${CMAKE_BINARY} "${default_args[@]}" "${cmake_args[@]}" "${CMAKE_SOURCE:-${WORK}}" || return 1
+}
+
+# Function for configuring a package. Disable the out_of_source exparam to make this
+# exlib perform the build in the sources. Otherwise it defaults to out-of-source.
+cmake_src_configure() {
+    illegal_in_global_scope
+
+    ecmake \
+        "${CMAKE_SRC_CONFIGURE_PARAMS[@]}" \
+        $(for s in "${CMAKE_SRC_CONFIGURE_OPTION_BUILDS[@]}" ; do
+            cmake_build ${s}
+        done ) \
+        $(for s in "${CMAKE_SRC_CONFIGURE_OPTION_DISABLE_FINDS[@]}" ; do
+            cmake_disable_find ${s}
+        done ) \
+        $(for s in "${CMAKE_SRC_CONFIGURE_OPTION_ENABLES[@]}" ; do
+            cmake_enable ${s}
+        done ) \
+        $(for s in "${CMAKE_SRC_CONFIGURE_OPTION_HAVES[@]}" ; do
+            cmake_have ${s}
+        done ) \
+        $(for s in "${CMAKE_SRC_CONFIGURE_OPTIONS[@]}" ; do
+            cmake_option ${s}
+        done ) \
+        $(for s in "${CMAKE_SRC_CONFIGURE_OPTIONS_CUSTOM[@]}" ; do
+            option ${s}
+        done ) \
+        $(for s in "${CMAKE_SRC_CONFIGURE_OPTION_USES[@]}" ; do
+            cmake_use ${s}
+        done ) \
+        $(for s in "${CMAKE_SRC_CONFIGURE_OPTION_WANTS[@]}" ; do
+            cmake_want ${s}
+        done ) \
+        $(for s in "${CMAKE_SRC_CONFIGURE_OPTION_WITHS[@]}" ; do
+            cmake_with ${s}
+        done ) \
+        $(for s in "${CMAKE_SRC_CONFIGURE_TESTS[@]}" ; do
+            expecting_tests ${s}
+        done ) \
+        "${@}"
+}
+
+ecmake_build() {
+    illegal_in_global_scope
+
+    # CMake supports `VERBOSE` and `CMAKE_NO_VERBOSE` envvars since 3.14.
+    # User may set `CMAKE_NO_VERBOSE` in his shell or `/etc/paludis/bashrc`
+    # to suppress verbose output enforced by `cmake.exlib`
+    if [[ -z ${CMAKE_NO_VERBOSE} ]]; then
+        export VERBOSE=${VERBOSE:-1}
+    fi
+    edo ${CMAKE_BINARY} --build . -j${EXJOBS:-1} "${@}"
+}
+
+# Function for compiling the package.
+# The following variables are supported to control the compilation process:
+#   CMAKE_SRC_COMPILE_TARGETS
+#       Build different target(s) instead of the default target.
+#   CMAKE_SRC_COMPILE_PARAMS
+#       Additional parameters to the cmake --build command.
+#   DEFAULT_SRC_COMPILE_PARAMS
+#       Deprecated, prints a warning message.
+#       Only supported with ninja=false. These params will be passed through to the "make" command,
+#       like in default_src_compile
+cmake_src_compile() {
+    illegal_in_global_scope
+
+    local -a cmake_build_params
+    if [[ ${#CMAKE_SRC_COMPILE_TARGETS[@]} -ne 0 ]] ; then
+        # The --target option takes a space-separated list of targets
+        cmake_build_params+=( --target "${CMAKE_SRC_COMPILE_TARGETS[*]}" )
+    fi
+    cmake_build_params+=( "${CMAKE_SRC_COMPILE_PARAMS[@]}" )
+
+    if ! exparam -b ninja && [[ ${#DEFAULT_SRC_COMPILE_PARAMS[@]} -ne 0 ]] ; then
+        ewarn "This package is setting DEFAULT_SRC_COMPILE_PARAMS"
+        ewarn "Using this variable with cmake.exlib is deprecated"
+        ewarn "Please switch to the CMAKE_SRC_COMPILE_* variables instead"
+        # cmake --build can pass through params to make, so we don't need to run emake here.
+        hasq -- "${cmake_build_params[@]}" || cmake_build_params+=( -- )
+        cmake_build_params+=( "${DEFAULT_SRC_COMPILE_PARAMS[@]}" )
+    fi
+
+    ecmake_build "${cmake_build_params[@]}"
+}
+
+ectest() {
+    illegal_in_global_scope
+
+    edo ${CTEST_BINARY} --verbose --output-on-failure -j${EXJOBS:-1} "${@}"
+}
+
+# Function for running the package tests.
+# The following variables are supported to control the test process:
+#   CMAKE_SRC_TEST_PARAMS
+#       Additional parameters to the ctest command.
+#   DEFAULT_SRC_TEST_PARAMS
+#       Deprecated, prints a warning message.
+#       Only supported with ninja=false. These params will be passed through to the "make" command,
+#       like in default_src_test
+cmake_src_test() {
+    illegal_in_global_scope
+
+    if ! exparam -b ninja && [[ ${#DEFAULT_SRC_TEST_PARAMS[@]} -ne 0 ]] ; then
+        ewarn "This package is setting DEFAULT_SRC_TEST_PARAMS"
+        ewarn "Using this variable with cmake.exlib is deprecated"
+        ewarn "Please switch to the CMAKE_SRC_TEST_* variables instead"
+        # No reliable way to translate default params to ctest params, so run make test
+        if make -j1 -n "${DEFAULT_SRC_TEST_PARAMS[@]}" test ; then
+            echo "Found test target"
+            emake \
+                ARGS="--verbose --output-on-failure -j${EXJOBS:-1}" \
+                "${DEFAULT_SRC_TEST_PARAMS[@]}" \
+                "ARGS+=${CMAKE_SRC_TEST_PARAMS[*]@Q}" \
+                test
+        fi
+        return
+    fi
+
+    # cmake adds --force-new-ctest-process to its "test" target, replicate that.
+    # By default ctest logs a message and exits successfully if no tests were found.
+    ectest --force-new-ctest-process "${CMAKE_SRC_TEST_PARAMS[@]}"
+}
+
+ecmake_install() {
+    illegal_in_global_scope
+
+    # CMake supports `VERBOSE` and `CMAKE_NO_VERBOSE` envvars since 3.14.
+    # User may set `CMAKE_NO_VERBOSE` in his shell or `/etc/paludis/bashrc`
+    # to suppress verbose output enforced by `cmake.exlib`
+    if [[ -z ${CMAKE_NO_VERBOSE} ]]; then
+        export VERBOSE=${VERBOSE:-1}
+    fi
+    DESTDIR="${IMAGE}" edo ${CMAKE_BINARY} --install . "${@}"
+}
+
+# Function for installing the package. Automatically detects the build dir.
+# The following variables are supported to control the installation process:
+#   CMAKE_SRC_INSTALL_PARAMS
+#       Additional parameters to the cmake --install command.
+#   DEFAULT_SRC_INSTALL_PARAMS
+#       Deprecated, prints a warning message.
+#       Only supported with ninja=false. These params will be passed through to the "make" command,
+#       like in default_src_install
+#       Note that if ninja=false and this variable is set, CMAKE_SRC_INSTALL_PARAMS will not be
+#       used, since cmake --install is not run (it has to run emake install instead).
+#   DEFAULT_SRC_INSTALL_*
+#       The other DEFAULT_SRC_INSTALL_* variables are used by emagicdocs. Note that emagicdocs is
+#       run both in the build directory and (if doing out of source build) the source directory.
+cmake_src_install() {
+    illegal_in_global_scope
+
+    if ! exparam -b ninja && [[ ${#DEFAULT_SRC_INSTALL_PARAMS[@]} -gt 0 ]] ; then
+        ewarn "This package is setting DEFAULT_SRC_INSTALL_PARAMS"
+        ewarn "Using this variable with cmake.exlib is deprecated"
+        ewarn "Please switch to the CMAKE_SRC_INSTALL_* variables instead"
+        # cmake --install doesn't support passing through params to make
+        emake -j1 DESTDIR="${IMAGE}" "${DEFAULT_SRC_INSTALL_PARAMS[@]}" install
+    else
+        ecmake_install "${CMAKE_SRC_INSTALL_PARAMS[@]}"
+    fi
+
+    emagicdocs
+    if [[ -d ${CMAKE_SOURCE} && ${WORK} != ${CMAKE_SOURCE} ]]; then
+        edo pushd "${CMAKE_SOURCE}"
+        emagicdocs
+        edo popd
+    fi
+}
+
+### Functions below this are for internal use only.
+
+# Used by cmake_enable, cmake_have, cmake_want and cmake_with.
+_cmake_option() {
+    illegal_in_global_scope
+
+    [[ -n ${2} ]] || die "cmake_${FUNCNAME[1]} <option flag> [<flag name>]"
+    local flag
+    if [[ -n ${3} ]]; then
+        flag=${2}
+    else
+        flag=${2,,}
+    fi
+    echo "-D${1:+${1}_}${3:-$(optionfmt ${2})}:BOOL=$(option "${flag}" && echo TRUE || echo FALSE)"
+}
+

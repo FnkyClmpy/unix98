@@ -1,0 +1,68 @@
+# Copyright 2008 Santiago M. Mola
+# Copyright 2009 Bo Ørsted Andresen
+# Based in part upon sgml-catalog.eclass from Gentoo, by Matthew Turk <satai@gentoo.org> which is
+#   Copyright 1999-2004 Gentoo Foundation
+#   Distributed under the terms of the GNU General Public License v2
+
+export_exlib_phases pkg_postrm pkg_postinst pkg_prerm
+
+DEPENDENCIES="
+    build:
+        app-text/sgml-common
+"
+# suggested/recommended? app-text/sgmltools-lite
+
+sgml-catalog_cat_doinstall() {
+    illegal_in_global_scope
+
+    if [[ ! -e ${2} ]] ; then
+        eerror "${2} doesn't appear to exist, although it ought to!"
+        continue
+    fi
+    einfo "Adding ${2} to ${1} and /etc/sgml/catalog"
+    /usr/bin/install-catalog --add "${1}" "${2}" &>/dev/null
+}
+
+sgml-catalog_cat_doremove() {
+    illegal_in_global_scope
+
+    if [[ -e ${2} ]] ; then
+        ewarn "${2} still exists!  Not removing from ${1}"
+        ewarn "This is normal behavior for an upgrade ..."
+        continue
+    fi
+    einfo "Now removing ${1} from ${2} and /etc/sgml/catalog"
+    /usr/bin/install-catalog --remove "${1}" "${2}" &>/dev/null
+}
+
+sgml-catalog_pkg_postinst() {
+    local entry
+    for entry in "${SGML_CATALOGS[@]}"; do
+        sgml-catalog_cat_doinstall ${entry}
+    done
+    sgml-catalog_cleanup
+}
+
+sgml-catalog_pkg_prerm() {
+    sgml-catalog_cleanup
+}
+
+sgml-catalog_pkg_postrm() {
+    local entry
+    for entry in "${SGML_CATALOGS[@]}"; do
+        sgml-catalog_cat_doremove ${entry}
+    done
+}
+
+sgml-catalog_cleanup() {
+    illegal_in_global_scope
+
+    # gensgmlenv comes from sgmltools-lite
+    if [[ -e /usr/bin/gensgmlenv ]] ; then
+        einfo "Regenerating SGML environment variables ..."
+        gensgmlenv
+        # We can't use hereenvd here, since that uses doins, which accesses IMAGE, which isn't valid in pkg_{prerm,postinst}
+        grep -v export /etc/sgml/sgml.env >/etc/env.d/93sgmltools-lite || ewarn "Couldn't update /etc/env.d/93sgmltools-lite"
+    fi
+}
+

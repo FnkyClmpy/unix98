@@ -1,0 +1,112 @@
+# Copyright 2008 Richard Brown
+# Copyright 2014 Morgane "Sardem FF7" Glidic <sardemff7@exherbo.org>
+# Distributed under the terms of the GNU General Public License v2
+# Based in part upon 'gems.eclass' from Gentoo, which is:
+#     Copyright 1999-2005 Gentoo Foundation
+#
+# Purpose: Install rubygems packages
+
+myexparam blacklist=none
+
+myexparam -b has_rdoc=true
+myexparam -b multislot=false
+
+myexparam pn=${MY_PN:-${PN}}
+myexparam pnv=${MY_PNV:-$(exparam pn)-${PV}}
+
+exparam -v GEM_PN pn
+exparam -v GEM_PNV pnv
+
+myexparam -b with_opt=false
+exparam -v GEM_WITH_OPT with_opt
+
+if exparam -b with_opt; then
+    myexparam option_name=ruby
+    exparam -v GEM_OPTION_NAME option_name
+
+    GEM_WITH_OPT+=" option_name=${GEM_OPTION_NAME}"
+fi
+
+require ruby [ blacklist="$(exparam blacklist)" with_opt=${GEM_WITH_OPT} ]
+require alternatives
+
+export_exlib_phases src_install
+
+if [[ -z ${DOWNLOADS} ]]; then
+    DOWNLOADS="https://rubygems.org/downloads/${GEM_PNV}.gem"
+    REMOTE_IDS="rubygems:${GEM_PN}"
+fi
+
+HOMEPAGE="https://rubygems.org/gems/${GEM_PN}"
+
+exparam -b has_rdoc && MYOPTIONS+=" doc"
+
+WORK=${WORKBASE}
+
+gem_run_phase() {
+    easy-multibuild_src_${EXHERES_PHASE}
+}
+
+gem_install_one_multibuild() {
+    unset GEM_HOME GEM_PATH RUBYOPT
+
+    echo "Hello :-)"
+    echo "RUBY = ${RUBY}"
+    echo "GEM = ${GEM}"
+
+    site_gem_dir=$(${RUBY} -rrubygems -e 'print Gem.dir')
+    vendor_gem_dir=$(${RUBY} -rrubygems -e 'print Gem.vendor_dir' 2> /dev/null) \
+        || vendor_gem_dir=${site_gem_dir/gems/vendor_gems}
+
+    export GEM_HOME="${IMAGE%/}${vendor_gem_dir}"
+    export GEM_PATH="${vendor_gem_dir}:${GEM_HOME}:${site_gem_dir}"
+
+    local myconf=()
+    local abi=$(ruby_get_abi)
+
+    if exparam -b has_rdoc && option doc; then
+        myconf+=( --document )
+    else
+        myconf+=( --no-document )
+    fi
+
+    [[ -n "${GEM_SRC_INSTALL_PARAMS[*]}" ]] && myconf+=( -- )
+
+    local gem=${GEM_SOURCE_DIR:-${FETCHEDDIR}}/${GEM_FILENAME:-${GEM_PNV}.gem}
+    local abi_params=GEM_${abi//\./_}_SRC_INSTALL_PARAMS[@]
+
+    edo ${GEM} install -V "${gem}" --local \
+        "${myconf[@]}" \
+        "${GEM_SRC_INSTALL_PARAMS[@]}" \
+        "${!abi_params}"
+
+    if [[ -d ${IMAGE}/${vendor_gem_dir}/bin ]]; then
+        local alternatives=( _$(exhost --target)_${SLOT}_${PN} ${abi} ${abi} ) path exe
+        local slot_alternatives=( ${PN} ${SLOT} ${SLOT} )
+        dodir /usr/$(exhost --target)/bin
+        edo pushd "${IMAGE}"
+        for path in ${vendor_gem_dir#/}/bin/* ; do
+            exe=$(basename ${path})
+            alternatives+=( /usr/$(exhost --target)/bin/${exe} /usr/$(exhost --target)/bin/${exe}${abi} )
+            dosym ../../../${path} /usr/$(exhost --target)/bin/${exe}${abi}
+            slot_alternatives+=( /${path} /${path}-${SLOT} /usr/$(exhost --target)/bin/${exe}{,-${SLOT}-}${abi} )
+        done
+        edo popd
+        [[ "${PN}" == "bundler" ]] || alternatives_for "${alternatives[@]}"
+        exparam -b multislot && alternatives_for "${slot_alternatives[@]}"
+    fi
+
+    keepdir ${vendor_gem_dir}/{build_info,doc,extensions,gems,cache,specifications}
+
+    # remove empty directory created on build time since Ruby ABI >= 3.0.0
+    edo find "${IMAGE}"/usr/ -empty -type d -delete
+}
+
+install_one_multibuild() {
+    gem_install_one_multibuild
+}
+
+gem_src_install() {
+    gem_run_phase
+}
+

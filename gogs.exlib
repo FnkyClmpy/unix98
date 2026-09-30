@@ -1,0 +1,65 @@
+# Copyright 2015 Kylie McClain <somasis@exherbo.org>
+# Distributed under the terms of the GNU General Public License v2
+
+# gogs.exlib - Sets correct DOWNLOADS, HOMEPAGE, etc. for projects
+# on Gogs hosted sites
+#
+# For untagged revisions, use `rev=`. For tagged revisions, use `tag=`.
+# For any other sort of git ref, use `ref=`. You can use `ref=` for tags
+# and for untagged revisions as well, but it's more descriptive for the
+# reader to just use `rev=` and `tag=`.
+
+myexparam prefix
+myexparam user="${MY_PN:-${PN}}"
+myexparam pn="${MY_PN:-${PN}}"
+myexparam pv="${MY_PV:-${PV}}"
+myexparam pnv=$(exparam pn)-$(exparam pv)
+
+myexparam ref=
+myexparam rev= # only use for untagged revisions
+myexparam tag="${MY_PV:-${PV}}"
+
+myexparam suffix=tar.gz
+
+HOMEPAGE="$(exparam prefix)/$(exparam user)/$(exparam pn)"
+
+type=tag
+
+if ever is_scm;then
+    type=scm
+elif [[ -n $(exparam ref) ]];then
+    type=ref
+elif [[ -n $(exparam rev) ]];then
+    type=rev
+fi
+
+case "$type" in
+    scm)
+        myexparam branch=
+        exparam -v SCM_BRANCH branch
+
+        GOGS_TYPE=scm
+        SCM_REPOSITORY="$(exparam prefix)/$(exparam user)/$(exparam pn).git"
+        require scm-git
+    ;;
+    ref|rev|tag)
+        [[ "$type" == tag ]] && myexparam tag && ref=$(exparam tag)
+        [[ "$type" == ref ]] && myexparam ref && ref=$(exparam ref)
+        [[ "$type" == rev ]] && myexparam rev && ref=$(exparam rev)
+        DOWNLOADS="${HOMEPAGE}/archive/${ref}.$(exparam suffix) -> $(exparam pnv).$(exparam suffix)"
+        GOGS_TYPE=ref
+        GOGS_PN=$(exparam pn)
+        GOGS_REF=${ref}
+    ;;
+esac
+
+export_exlib_phases src_unpack
+
+gogs_src_unpack() {
+    if [[ "${GOGS_TYPE}" == scm ]];then
+        scm_src_unpack
+    else
+        default
+    fi
+}
+

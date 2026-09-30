@@ -1,0 +1,67 @@
+# Copyright 2010 Saleem Abdulrasool <compnerd@compnerd.org>
+# Copyright 2012 Benedikt Morbach <moben@exherbo.org>
+# Distributed under the terms of the GNU General Purpose License v2
+
+# NOTE(moben): This exlib does _not_ depend on gtk+.
+#              If gtk+ isn't installed, then there is no point in pulling it in
+#              just to generate its cache. (example: qt/kde-only system)
+#              Code in x11-libs/gtk+ makes sure that the cache is generated,
+#              should gtk+ be installed at a later point.
+#              If gtk+ is indeed installed, this exlib will regenerate the
+#              cache when an application is installed.
+
+: ${GTK_UPDATE_ICON_CACHE:=${ROOT}usr/$(exhost --build)/bin/gtk-update-icon-cache}
+
+GTK_ICON_CACHE_ICON_THEME_DIRECTORIES=()
+
+export_exlib_phases pkg_preinst pkg_postinst pkg_postrm
+
+gtk_icon_cache_exlib_save_theme_directories()
+{
+    illegal_in_global_scope
+
+    local icon_prefix="${1:-${IMAGE}}"
+
+    for path in "${icon_prefix}"usr/share/icons/* ; do
+        [[ -d "${path}" ]] && GTK_ICON_CACHE_ICON_THEME_DIRECTORIES+=( "${path#${icon_prefix}}" )
+    done
+}
+
+gtk_icon_cache_exlib_update_theme_cache()
+{
+    illegal_in_global_scope
+
+    [[ -n "${GTK_ICON_CACHE_ICON_THEME_DIRECTORIES[@]}" ]] || return
+
+    if [[ -x ${GTK_UPDATE_ICON_CACHE} ]] ; then
+        echo "Updating icon cache ..."
+
+        for dir in "${GTK_ICON_CACHE_ICON_THEME_DIRECTORIES[@]}" ; do
+            [[ -f "${ROOT}${dir}/index.theme" ]] || continue
+
+            nonfatal edo "${GTK_UPDATE_ICON_CACHE}" -qf "${ROOT}${dir}" ||
+                ewarn "Failed to update icon cache in ${dir}"
+        done
+    fi
+}
+
+gtk-icon-cache_pkg_preinst()
+{
+    illegal_in_global_scope
+
+    gtk_icon_cache_exlib_save_theme_directories
+}
+
+gtk-icon-cache_pkg_postinst()
+{
+    illegal_in_global_scope
+
+    gtk_icon_cache_exlib_update_theme_cache
+}
+
+gtk-icon-cache_pkg_postrm() {
+    illegal_in_global_scope
+
+    gtk_icon_cache_exlib_update_theme_cache
+}
+

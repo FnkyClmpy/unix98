@@ -1,0 +1,21 @@
+# Copyright 2013 Jakob Nixdorf
+# Copyright 2010 Mike Kelly
+# Distributed under the terms of the GNU General Public License v2
+
+myexparam suffix=tar.gz
+
+myexparam pn=${MY_PN:-${PN}}
+myexparam pnv=${MY_PNV:-${PNV}}
+
+PYPI_PN=$(exparam pn)
+
+HOMEPAGE="https://pypi.org/project/${PYPI_PN}/"
+DOWNLOADS="https://files.pythonhosted.org/packages/source/${PYPI_PN:0:1}/${PYPI_PN}/$(exparam pnv).$(exparam suffix)"
+REMOTE_IDS+=" pypi:${PYPI_PN}"
+
+if has $(exparam suffix) zip ; then
+    DEPENDENCIES+="
+        build:
+            virtual/unzip"
+fi
+

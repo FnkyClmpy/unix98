@@ -1,0 +1,35 @@
+# Copyright 2026 Tristan Charbonneau <tristan.charbonneau@clever.cloud>
+# Distributed under the terms of the GNU General Public License v2
+
+myexparam logrotate_files=[ "${FILES}"/logrotate ]
+
+DEPENDENCIES="
+    suggestion:
+        app-admin/logrotate [[ description = [ Use logrotate for rotating logs ] ]]
+"
+
+export LOGROTATE_CONFD_DIR="/etc/logrotate.d"
+
+install_logrotate_files() {
+    exparam -v logrotate_files logrotate_files[@]
+
+    [[ -z "${logrotate_files}" ]] || logrotate_files_doins "${LOGROTATE_CONFD_DIR}" "${logrotate_files[@]}"
+}
+
+# logrotate_files_doins <dir> [config files]: installs [config files] to <dir>
+logrotate_files_doins() {
+    local logrotate_file
+
+    insinto "${1}"
+    shift
+
+    for logrotate_file in "$@"; do
+        if [[ -d "${logrotate_file}" ]]; then
+            doins -r "${logrotate_file}"/*
+        elif [[ -f "${logrotate_file}" ]]; then
+            doins "${logrotate_file}"
+        else
+            doins "${FILES}"/logrotate/"${logrotate_file}"
+        fi
+    done
+}

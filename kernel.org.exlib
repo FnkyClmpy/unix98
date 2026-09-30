@@ -1,0 +1,10 @@
+# Copyright 2016 Kylie McClain <somasis@exherbo.org>
+# Distributed under the terms of the GNU General Public License v2
+
+myexparam repo
+
+REMOTE_IDS="kernel.org:$(exparam repo)"
+
+HOMEPAGE="https://git.kernel.org/cgit/$(exparam repo).git"
+UPSTREAM_CHANGELOG="${HOMEPAGE}/log/"
+

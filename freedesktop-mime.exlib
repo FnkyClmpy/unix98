@@ -1,0 +1,39 @@
+# Copyright 2008 Saleem Abdulrasool <compnerd@compnerd.org>
+# Distributed under the terms of the GNU General Public License v2
+
+# This exlib updates the cache of mimetypes on the system after the exheres was (un)installed.
+#
+# You MUST require this exlib if and only if your exheres installs a mimetype to /usr/share/mime
+#
+# See also 'man 1 update-mime-database'
+
+myexparam -b with_opt=false
+exparam -b with_opt && myexparam option_name='gui'
+
+export_exlib_phases pkg_postinst pkg_postrm
+
+if [[ "${CATEGORY}/${PN}" != 'x11-misc/shared-mime-info' ]];then
+    exparam -b with_opt && opt="$(exparam option_name)? ( "
+    DEPENDENCIES="build: ${opt}x11-misc/shared-mime-info${opt:+ )}"
+fi
+
+freedesktop-mime_update_mime_database() {
+    illegal_in_global_scope
+
+    exparam -b with_opt && ! optionq "$(exparam option_name)" && return 0
+    nonfatal edo /usr/$(exhost --build)/bin/update-mime-database -n "${ROOT}"/usr/share/mime ||
+        eerror "update-mime-database failed"
+}
+
+freedesktop-mime_pkg_postrm() {
+    illegal_in_global_scope
+
+    freedesktop-mime_update_mime_database
+}
+
+freedesktop-mime_pkg_postinst() {
+    illegal_in_global_scope
+
+    freedesktop-mime_update_mime_database
+}
+

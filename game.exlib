@@ -1,0 +1,68 @@
+# Copyright 2009 David Leverton <dleverton@exherbo.org>
+# Distributed under the terms of the GNU General Public License v2
+
+myexparam scores=[ ]
+exparam -v GAME_SCORES scores[@]
+
+DEPENDENCIES="
+    build+run:
+        user/wizard
+        group/games
+"
+
+dovarlibgames() {
+    illegal_in_global_scope
+
+    local R=
+    if [[ ${1} == -R ]]; then
+        R=-R
+        shift
+    fi
+
+    local f
+    for f in "${@-/var/lib/games}"; do
+        [[ ${f} == ${IMAGE%+(/)}/* ]] && f=${f#${IMAGE%+(/)}}
+        [[ -e "${IMAGE}/${f}" ]] || dodir "${f}"
+        edo chown ${R} wizard:games "${IMAGE}${f}"
+        edo chmod ${R} g+w "${IMAGE}${f}"
+        if [[ -d "${IMAGE}/${f}" ]]; then
+            edo chmod g+s "${IMAGE}${f}"
+            if [[ -n ${R} ]]; then
+                edo find "${IMAGE}/${f}" -type d -exec chmod g+s '{}' +
+            fi
+        fi
+    done
+}
+
+preserve_scores() {
+    illegal_in_global_scope
+
+    local f
+    for f in "${@}"; do
+        [[ ${f} == ${IMAGE%+(/)}/* ]] && f=${f#${IMAGE%+(/)}}
+        [[ ( -e ${IMAGE}/${f} || -L ${IMAGE}/${f} ) && ! -f ${IMAGE}/${f} ]] && continue
+        GAME_SCORES+=( "${f}" )
+    done
+}
+
+game_pkg_preinst() {
+    local staging="${TEMP}"/game.exlib-scores
+    edo mkdir "${staging}"
+
+    local f
+    for f in "${GAME_SCORES[@]}"; do
+        edo mkdir -p "${staging}/${f%/*}"
+        edo mv {"${IMAGE}","${staging}"}/"${f}"
+    done
+}
+
+game_pkg_postinst() {
+    local staging="${TEMP}"/game.exlib-scores f
+    for f in "${GAME_SCORES[@]}"; do
+        # don't die in pkg_postinst
+        [[ -f ${ROOT}/${f} ]] || cp -p {"${staging}","${ROOT}"}/"${f}"
+    done
+}
+
+export_exlib_phases pkg_preinst pkg_postinst
+

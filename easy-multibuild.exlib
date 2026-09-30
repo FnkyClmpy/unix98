@@ -1,0 +1,158 @@
+# Copyright 2009 Mike Kelly
+# Distributed under the terms of the GNU General Public License v2
+
+# exparams
+#   classes ( format: e.g. PYTHON_ABIS )
+#     which classes should we build for? Any value listed must be in
+#     $MULTIBUILD_CLASSES, in make.defaults in their profiles.
+#
+#   multiunpack ( format: true or false ) ( defaults to false )
+#     unpack separately for each target. for packages that can't support out-of-source builds. if at
+#     all possible, make it support out-of-source builds instead.
+#
+#   work ( format: path ) ( defaults to ${PNV} if multiunpack is true and nothing otherwise )
+#     for use with the multiunpack exparam. path to WORK relative from the dir where the sources are
+#     unpacked.
+#
+#   with_option ( format: option_name ) ( defaults to empty )
+#     when given the name of an option, multibuild'ing will only be done if that option is enabled.
+#     Otherwise easy-multibuild_run_phase will run the *_one_multibuild phases on their own,
+#     outside the multibuild environment.
+#     Example:
+#         python.exlib can use [ with_option=python ] to only run multibuild if the python option is
+#         enabled, e.g. for optional python bindings. Otherwise, the phases are only run once with
+#         no python selected.
+#     Warning:
+#         Care has to be taken to not use anything dependent on multibuild if the option is disabled.
+#
+require multibuild
+
+myexparam classes=[ ]
+exparam -v EASY_MULTIBUILD_CLASSES classes[@]
+
+myexparam with_option=
+myexparam -b multiunpack=false
+
+if ! exparam -b multiunpack ; then
+    myexparam work=
+else
+    myexparam work=${PNV}
+    WORK=${WORKBASE}
+    export_exlib_phases src_unpack src_prepare
+fi
+
+export_exlib_phases src_configure src_compile src_test src_install
+
+# TODO: use less evil haxx to do this
+easy-multibuild_check_classes() {
+    local a
+    for a in "${EASY_MULTIBUILD_CLASSES[@]}" ; do
+        has "${a}" ${MULTIBUILD_CLASSES} \
+            || die "Invalid multibuild class: ${a}"
+    done
+}
+
+__easy-multibuild_prep_n_run_phase_or_default() {
+    if [[ "$(type -t "${EXHERES_PHASE}_prepare_one_multibuild")" == "function" ]] ; then
+        "${EXHERES_PHASE}_prepare_one_multibuild"
+    fi
+
+    edo pushd "${WORKBASE}/${MULTIBUILD_CLASS}/${MULTIBUILD_TARGET}/${easy_multibuild_work}"
+
+    if [[ "$(type -t "${EXHERES_PHASE}_one_multibuild")" == "function" ]] ; then
+        "${EXHERES_PHASE}_one_multibuild"
+    else
+        default
+    fi
+
+    edo popd
+}
+
+easy-multibuild_run_phase() {
+    local targetsv easy_multibuild_work
+
+    # TODO: when paludis handles it better, move this to global scope.
+    easy-multibuild_check_classes
+
+    [[ ${EXHERES_PHASE} != unpack ]] && exparam -v easy_multibuild_work work
+
+    exparam -v option_name with_option
+
+    if [[ -z ${option_name} ]] || option ${option_name}; then
+        for MULTIBUILD_CLASS in "${EASY_MULTIBUILD_CLASSES[@]}" ; do
+            targetsv="MULTIBUILD_${MULTIBUILD_CLASS}_TARGETS"
+            echo "Multibuild Class: ${MULTIBUILD_CLASS} (${targetsv})"
+
+            for MULTIBUILD_TARGET in ${!targetsv} ; do
+                if ! option ${MULTIBUILD_CLASS,,}:${MULTIBUILD_TARGET} ; then
+                    echo "  ${MULTIBUILD_CLASS} Target: ${MULTIBUILD_TARGET} (disabled)"
+                    continue
+                fi
+
+                echo "  ${MULTIBUILD_CLASS} Target: ${MULTIBUILD_TARGET}"
+                multibuild_switch_build_target "${MULTIBUILD_CLASS}" "${MULTIBUILD_TARGET}"
+
+                __easy-multibuild_prep_n_run_phase_or_default
+            done
+        done
+    else
+        __easy-multibuild_prep_n_run_phase_or_default
+    fi
+}
+
+if exparam -b multiunpack ; then
+    unpack_prepare_one_multibuild() {
+        edo mkdir -p "${WORKBASE}/${MULTIBUILD_CLASS}/${MULTIBUILD_TARGET}"
+    }
+
+    easy-multibuild_src_unpack() {
+        easy-multibuild_run_phase
+    }
+
+    easy-multibuild_src_prepare() {
+        easy-multibuild_run_phase
+    }
+
+    scm_multiunpack_hook() {
+        exparam -v option_name with_option
+
+        if [[ -z ${option_name} ]] || option ${option_name}; then
+            local unpack_to=${1}
+            local MULTIBUILD_CLASS MULTIBUILD_TARGET targetsv
+
+            for MULTIBUILD_CLASS in "${EASY_MULTIBUILD_CLASSES[@]}" ; do
+                targetsv="MULTIBUILD_${MULTIBUILD_CLASS}_TARGETS"
+                for MULTIBUILD_TARGET in ${!targetsv} ; do
+                    if option ${MULTIBUILD_CLASS,,}:${MULTIBUILD_TARGET} ; then
+                        scm_multiunpack "${WORKBASE}/${MULTIBUILD_CLASS}/${MULTIBUILD_TARGET}/${unpack_to#${WORKBASE}/}"
+                    fi
+                done
+            done
+        else
+            scm_multiunpack "${1}"
+        fi
+    }
+else
+    configure_prepare_one_multibuild() {
+        edo mkdir -p "${WORKBASE}/${MULTIBUILD_CLASS}/${MULTIBUILD_TARGET}"
+        export ECONF_SOURCE="${WORK}"
+    }
+fi
+
+easy-multibuild_src_configure() {
+    easy-multibuild_run_phase
+}
+
+easy-multibuild_src_compile() {
+    easy-multibuild_run_phase
+}
+
+easy-multibuild_src_test() {
+    easy-multibuild_run_phase
+}
+
+easy-multibuild_src_install() {
+    easy-multibuild_run_phase
+    emagicdocs
+}
+

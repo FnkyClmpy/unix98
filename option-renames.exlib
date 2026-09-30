@@ -1,0 +1,42 @@
+# Copyright 2015 Bo Ørsted Andresen <zlin@exherbo.org>
+# Distributed under the terms of the GNU General Public License v2
+
+# This exlibs accepts input in two forms:
+#    require option-renames [ renames=[ 'oldname newname' ] ]
+# or:
+#    OPTION_RENAMES=(
+#        'oldname newname'
+#    )
+#    require option-renames
+
+myexparam renames=[ ]
+
+export_exlib_phases pkg_pretend
+
+option-renames_pkg_pretend() {
+    default
+
+    local from to opt opts cps=${CATEGORY}/${PN}:${SLOT}
+    exparam -v opts renames[@]
+    opts+=( "${OPTION_RENAMES[@]}" )
+    [[ ${#opts[*]} -eq 0 ]] && die "option-renames.exlib requires at least one option rename"
+
+    if has_version ${cps}; then
+        for opt in "${opts[@]}"; do
+            from=${opt% *}
+            to=${opt#* }
+            if option ${to}; then
+                if ! has_version "${cps}[${from}(+)]"; then
+                    ewarn "'${from}' option was renamed to '${to}' for ${cps}"
+                    ewarn "You previously had '${from}' disabled. You may want to also disable '${to}'."
+                fi
+            else
+                if has_version "${cps}[${from}(-)]"; then
+                    ewarn "'${from}' option was renamed to '${to}' for ${cps}"
+                    ewarn "You previously had '${from}' enabled. You may want to also enable '${to}'."
+                fi
+            fi
+        done
+    fi
+}
+

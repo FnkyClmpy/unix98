@@ -1,0 +1,36 @@
+# Copyright 1999-2005 Gentoo Foundation
+# Copyright 2008 David Leverton <dleverton@exherbo.org>
+# Distributed under the terms of the GNU General Public License v2
+# Based in part upon bash-completion.eclass:
+#    Author: Aaron Walker <ka0ttic@gentoo.org>
+
+MYOPTIONS="bash-completion"
+
+DEPENDENCIES="
+    post:
+        bash-completion? (
+            app-admin/eclectic
+            app-shells/bash-completion
+        )"
+
+export BASHCOMPLETIONDIR=/usr/share/bash-completion/completions
+
+dobashcompletion() {
+    illegal_in_global_scope
+
+    [[ -z "$1" ]] && die "usage: dobashcompletion <file> [ <installed name> ]"
+    if option bash-completion; then
+        insinto "${BASHCOMPLETIONDIR}"
+        newins "${1}" "${2:-${PN}}"
+    fi
+}
+
+bash-completion_src_install() {
+    local c
+    for c in "${BASH_COMPLETIONS[@]}"; do
+        dobashcompletion ${c}
+    done
+}
+
+export_exlib_phases src_install
+

@@ -1,0 +1,25 @@
+# Copyright 2010 Yury G. Kudryashov <urkud@ya.ru>
+# Distributed under the terms of the GNU General Public License v2
+
+myexparam suffix=tar.bz2
+
+myexparam pn=${MY_PN:-${PN}}
+# Google code project name.
+myexparam project=$(exparam pn)
+myexparam pv=${MY_PV:-${PV}}
+myexparam pnv=${MY_PNV:-$(exparam pn)-$(exparam pv)}
+
+HOMEPAGE="https://code.google.com/p/$(exparam project)"
+if ! ever is_scm ; then
+    DOWNLOADS="https://$(exparam project).googlecode.com/files/$(exparam pnv).$(exparam suffix)"
+fi
+
+# See Atom feed @ https://code.google.com/feeds/p/$(exparam project)/downloads/basic
+REMOTE_IDS+=" googlecode:$(exparam project) "
+
+if has $(exparam suffix) zip; then
+    DEPENDENCIES+="
+        build:
+            virtual/unzip"
+fi
+

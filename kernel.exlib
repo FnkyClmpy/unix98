@@ -1,0 +1,19 @@
+# Copyright 2011 Paul Seidler <sepek@exherbo.org>
+# Distributed under the terms of the GNU General Public License v2
+
+kernel_check_version_string() {
+    if [[ ! $(uname -r) =~ ^([0-9]+)\.([0-9]+)(\.[0-9]+)?(-rc[0-9]+)? ]] ; then
+        eerror "Failed to parse version string of running kernel: 'uname -r' returns"
+        eerror "'$(uname -r)'."
+        eerror "String is expected to start with a base version, optionally including a"
+        eerror "release candidate component, e.g. '2.6.38' or '2.6.38-rc1'."
+        die "Malformed kernel version string"
+    fi
+}
+
+kernel_version_at_least() {
+    kernel_check_version_string
+
+    local normalized_kernel_version=${BASH_REMATCH[1]}.${BASH_REMATCH[2]}${BASH_REMATCH[3]}${BASH_REMATCH[4]:-}
+    ever at_least "${1}" ${normalized_kernel_version}
+}

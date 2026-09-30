@@ -1,0 +1,41 @@
+# Copyright 2009 Ingmar Vanhassel
+# Distributed under the terms of the GNU General Public License v2
+# Based in part upon 'eutils.eclass' from Gentoo, which is:
+#     Copyright 1999-2009 Gentoo Foundation.
+
+unpack_makeself() {
+    illegal_in_global_scope
+
+    local input v skip=0 compression=gz
+    input=${1:-${ARCHIVES}}
+
+    v=$(edo grep -a '#.*Makeself' "${FETCHEDDIR}/${input}" | edo awk '{print $NF}')
+
+    case ${v} in
+        1.6.0-nv)
+            skip=$(edo grep -a ^skip= "${FETCHEDDIR}/${input}" | edo cut -d= -f2)
+            compression=gz
+            ;; # NVIDIA version
+        1.6.0-nv2|1.6.0-nv4)
+            skip=$(edo grep -a ^skip= "${FETCHEDDIR}/${input}" | edo cut -d= -f2)
+            compression=xz
+            ;; # Newer NVIDIA version (xz compressed)
+        1.6.0-nv5|1.6.0-nv7|1.6.0-nv8|1.6.0-nv9)
+            skip=$(edo grep -a ^skip= "${FETCHEDDIR}/${input}" | edo cut -d= -f2)
+            compression=zst
+            ;; # Newer NVIDIA version (Zstandard compressed)
+        2.*)
+            skip=$(edo grep -a ^SKIP= "${FETCHEDDIR}/${input}" | edo cut -d\" -f2)
+            (( skip++ )) # tail starts with $skip, makeself starts after $skip
+            ;; # makeself 2.x.x
+        *) die "makeself sanity check failed, v=${v}" ;;
+    esac
+
+    edo tail -n +${skip} "${FETCHEDDIR}/${input}" > ./${PNV}.tar.${compression}
+
+    edo mkdir "${WORK}"
+    edo cd "${WORK}"
+
+    unpack ./../${PNV}.tar.${compression}
+}
+

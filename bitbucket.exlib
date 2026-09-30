@@ -1,0 +1,77 @@
+# Copyright 2014 Nicolas Braud-Santoni <nicolas@braud-santoni.eu>
+# Based on github.exlib, which is:
+#    Copyright 2012 Benedikt Morbach <benedikt.morbach@googlemail.com>
+# Distributed under the terms of the GNU General Public License v2
+
+myexparam pn=${MY_PN:-${PN}}
+myexparam pv=${MY_PV:-${PV}}
+myexparam pnv=$(exparam pn)-$(exparam pv)
+myexparam user=$(exparam pn)
+
+myexparam download=${BITBUCKET_DOWNLOAD}
+myexparam rev=${BITBUCKET_REVISION}
+myexparam tag=${BITBUCKET_TAG:-$(exparam pv)}
+
+# branch can only be used for scm versions
+myexparam branch=${BITBUCKET_BRANCH}
+myexparam type=hg
+
+myexparam suffix=tar.gz # bitbucket supports tar.gz, tar.bz2, zip
+
+HOMEPAGE="https://bitbucket.org/$(exparam user)/$(exparam pn)"
+
+BITBUCKET_USER=$(exparam user)
+BITBUCKET_PN=$(exparam pn)
+
+case $(exparam type) in
+    hg|git)
+        true
+    ;;
+    *)
+        die "bitbucket.exlib: Invalid SCM type; valid types are hg or git"
+    ;;
+esac
+
+if ever is_scm; then
+    BITBUCKET_TYPE=scm
+
+    SCM_REPOSITORY="${HOMEPAGE}"
+    [[ $(exparam type) == git ]] && SCM_REPOSITORY="${SCM_REPOSITORY}.git"
+    exparam -v SCM_BRANCH branch
+    require scm-$(exparam type)
+else
+    if [[ -n $(exparam download) ]];then
+        BITBUCKET_TYPE=download
+        what="downloads/$(exparam download).$(exparam suffix)"
+    elif [[ -n $(exparam rev) ]]; then
+        BITBUCKET_TYPE=rev
+        what="get/$(exparam rev).$(exparam suffix)"
+    elif [[ -n $(exparam tag) ]];then
+        BITBUCKET_TYPE=tag
+        what="get/$(exparam tag).$(exparam suffix)"
+    fi
+    DOWNLOADS="${HOMEPAGE}/${what} -> $(exparam pnv).$(exparam suffix)"
+fi
+
+bitbucket_src_unpack() {
+    if [[ "${BITBUCKET_TYPE}" == scm ]];then
+        scm_src_unpack
+    else
+        default
+    fi
+
+    # only set WORK if it hasn't been set away from the default value
+    if [[ "${BITBUCKET_TYPE}" == @(tag|rev) && "${WORK}" == "${WORKBASE}"/"${PNV}" ]];then
+        WORK=( "${WORKBASE}"/${BITBUCKET_USER}-${BITBUCKET_PN}* )
+        if [[ "${#WORK[*]}" -ne 1 ]];then
+            die "There shouldn't be more than one directory in the downloaded archive. You might need to redownload the distfile."
+        elif [[ ! -d "${WORK}" ]];then
+            die "${WORK} does not exist."
+        else
+            WORK=${WORK[0]}
+        fi
+    fi
+}
+
+export_exlib_phases src_unpack
+

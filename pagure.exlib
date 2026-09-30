@@ -1,0 +1,18 @@
+# Copyright 2017 Heiko Becker <heirecka@exherbo.org>
+# Distributed under the terms of the GNU General Public License v2
+
+# For projects hosted at pagure.io, the replacement of fedorahosted.org
+
+myexparam pn=${MY_PN:-${PN}}
+myexparam pv=${MY_PV:-${PV}}
+myexparam pnv=${MY_PNV:-$(exparam pn)-$(exparam pv)}
+myexparam suffix=tar.gz
+
+HOMEPAGE="https://pagure.io/$(exparam pn)"
+
+REMOTE_IDS="pagure:$(exparam pn)"
+
+if ! ever is_scm;then
+    DOWNLOADS="https://releases.pagure.org/$(exparam pn)/$(exparam pnv).$(exparam suffix)"
+fi
+

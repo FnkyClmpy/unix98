@@ -1,0 +1,342 @@
+# Copyright 2008, 2009, 2010 Ingmar Vanhassel <ingmar@exherbo.org>
+# Distributed under the terms of the GNU General Public License v2
+#
+# Based in part upon autotools.eclass which is:
+#    Copyright 1999-2007 Gentoo Foundation
+#    $Header: /var/cvsroot/gentoo-x86/eclass/autotools.eclass,v 1.65 2007/03/04 21:03:59 vapier Exp $
+#
+# This exlib is for handling autotooled software packages that
+# need to regenerate their build scripts.
+#
+# required parameters:
+#     supported_autoconf=[ slots ], supported_automake=[ slots ]
+# Sort slots in order of preference, preferred first
+
+require dependencies-helpers
+
+export_exlib_phases src_prepare
+
+myexparam supported_autoconf[]
+myexparam supported_automake[]
+myexparam -b need_libtool=true
+
+exparam -v SUPPORTED_AUTOCONF supported_autoconf[@]
+exparam -v SUPPORTED_AUTOMAKE supported_automake[@]
+
+autotools_dependencies() {
+    if [[ ${SUPPORTED_AUTOCONF[@]} == none ]]; then
+        WANT_AUTOCONF=none
+    else
+        print_slot_dependencies \
+            sys-devel/autoconf "${SUPPORTED_AUTOCONF[@]}"
+    fi
+
+    if [[ ${SUPPORTED_AUTOMAKE[@]} == none ]]; then
+        WANT_AUTOMAKE="none"
+    else
+        print_slot_dependencies \
+            sys-devel/automake "${SUPPORTED_AUTOMAKE[@]}"
+    fi
+}
+
+myexparam deps_var=DEPENDENCIES
+printf -v "$(exparam deps_var)" "%s" "
+    build:
+        $(exparam -b need_libtool && echo sys-devel/libtool)
+        $(autotools_dependencies)
+"
+
+autotools_select_versions() {
+    local i sorted_slots=()
+    if [[ -z ${WANT_AUTOCONF} && ${SUPPORTED_AUTOCONF[@]} != none ]]; then
+        export WANT_AUTOCONF=$(get_best_slot_dependency sys-devel/autoconf ${SUPPORTED_AUTOCONF[@]})
+        [[ -z ${WANT_AUTOCONF} ]] && die "No autoconf installed"
+        echo "Using autoconf:${WANT_AUTOCONF}"
+    fi
+    if [[ -z ${WANT_AUTOMAKE} && ${SUPPORTED_AUTOMAKE[@]} != none ]]; then
+        export WANT_AUTOMAKE=$(get_best_slot_dependency sys-devel/automake ${SUPPORTED_AUTOMAKE[@]})
+        [[ -z ${WANT_AUTOMAKE} ]] && die "No automake installed"
+        echo "Using automake:${WANT_AUTOMAKE}"
+    fi
+}
+
+autotools_must_require() {
+    local f=${1}
+    shift
+    while [[ -n ${1} ]]; do
+        case "${1}" in
+            autoconf)
+                has none "${SUPPORTED_AUTOCONF[@]}" &&
+                    die "${f} requires ${1} but supported_${1}=[ none ] was specified" ;;
+            automake)
+                has none "${SUPPORTED_AUTOMAKE[@]}" &&
+                    die "${f} requires ${1} but supported_${1}=[ none ] was specified" ;;
+            *)
+                die "unrecognised argument ${1} for ${FUNCNAME}" ;;
+        esac
+        shift
+    done
+}
+
+# Variables:
+#
+#   AT_M4DIR          - Additional director(y|ies) aclocal should search
+#   AT_NO_RECURSIVE   - Set it to non-empty to avoid recurse in subdirs
+#   AM_OPTS           - Additional options to pass to automake during
+#                       eautoreconf call.
+#   AT_NOELIBTOOLIZE  - Don't run elibtoolize command if set to 'yes',
+#                       useful when elibtoolize needs to be ran with
+#                       particular options
+
+# Functions:
+#
+#   eautoreconf()  - Should do a full autoreconf - normally what most people
+#                    will be interested in.  Also should handle additional
+#                    directories specified by AC_CONFIG_SUBDIRS.
+#   eaclocal()     - Runs aclocal.  Respects AT_M4DIR for additional directories
+#                    to search for macro's.
+#   elibtoolize()  - Runs libtoolize.
+#   eautoconf      - Runs autoconf.
+#   eautoheader    - Runs autoheader.
+#   eautomake      - Runs automake
+
+
+# This function mimes the behavior of autoreconf, but uses the different
+# eauto* functions to run the tools. It doesn't take any parameters.
+eautoreconf() {
+    illegal_in_global_scope
+
+    # automake is checked for in eaclocal, eautomake - if needed
+    autotools_must_require ${FUNCNAME} autoconf
+
+    autotools_select_versions
+    local pwd=$(pwd) x auxdir
+
+    if [[ -z ${AT_NO_RECURSIVE} ]]; then
+        # Take care of subdirs
+        for x in $(autotools_get_subdirs); do
+            if [[ -d ${x} ]] ; then
+                cd "${x}"
+                eautoreconf
+                cd "${pwd}"
+            fi
+        done
+    fi
+
+    auxdir=$(autotools_get_auxdir)
+
+    echo "eautoreconf: running in ${PWD} ..."
+    [[ -n ${auxdir} ]] && mkdir -p "${auxdir}"
+    eaclocal
+    elibtoolize --copy --force
+    eautoconf
+    eautoheader
+    FROM_EAUTORECONF="yes" eautomake ${AM_OPTS}
+}
+
+# These functions run the autotools using autotools_run_tool with the
+# specified parameters. The name of the tool run is the same of the function
+# without e prefix.
+# They also force installing the support files for safety.
+eaclocal() {
+    illegal_in_global_scope
+
+    if [[ -f aclocal.m4 && -z $(grep -e 'generated.*by aclocal' aclocal.m4) ]] ; then
+        echo "eaclocal: aclocal.m4 exists and wasn't generated by aclocal"
+        echo "eaclocal: Not running aclocal"
+        return 0
+    fi
+
+    autotools_must_require ${FUNCNAME} automake
+
+    autotools_select_versions
+    local aclocal_opts=()
+
+    if [[ -n ${AT_M4DIR[@]} ]] ; then
+        for x in "${AT_M4DIR[@]}" ; do
+            case "${x}" in
+            "-I")
+                # We handle it below
+                ;;
+            *)
+                [[ ! -d ${x} ]] && ewarn "eaclocal: '${x}' does not exist"
+                aclocal_opts+=(-I "${x}")
+                ;;
+            esac
+        done
+    fi
+
+    autotools_run_tool aclocal "$@" "${aclocal_opts[@]}"
+}
+
+# Note that this function is in no way related to the atrocity that gentoo
+# calls elibtoolize in libtool.eclass
+elibtoolize() {
+    illegal_in_global_scope
+
+    autotools_select_versions
+    local opts lttest
+
+    # Check if we should run libtoolize (AM_PROG_LIBTOOL and AC_PROG_LIBTOOL
+    # are deprecated but still in use; LT_INIT is current)
+    lttest="$(autotools_check_macro "AC_PROG_LIBTOOL")$(autotools_check_macro "AM_PROG_LIBTOOL")$(autotools_check_macro "LT_INIT")"
+    [[ -n ${lttest} ]] || return 0
+
+    [[ -n $(autotools_check_macro "AM_INIT_AUTOMAKE") ]] && opts="--automake"
+
+    autotools_run_tool libtoolize "$@" ${opts}
+
+    # Need to rerun aclocal
+    eaclocal
+}
+
+eautoheader() {
+    illegal_in_global_scope
+
+    autotools_must_require ${FUNCNAME} autoconf
+
+    autotools_select_versions
+    # Check if we should run autoheader
+    [[ -n $(autotools_check_macro "AC_CONFIG_HEADERS") ]] || return 0
+    NO_FAIL=1 autotools_run_tool autoheader "$@"
+}
+
+eautoconf() {
+    illegal_in_global_scope
+
+    autotools_must_require ${FUNCNAME} autoconf
+
+    autotools_select_versions
+    if [[ ! -f configure.ac && ! -f configure.in ]] ; then
+        echo
+        eerror "No configure.{ac,in} present in ${PWD##*/}!"
+        echo
+        die "No configure.{ac,in} present in ${PWD##*/}!"
+    fi
+
+    autotools_run_tool autoconf "$@"
+}
+
+eautotest() {
+    illegal_in_global_scope
+
+    autotools_must_require ${FUNCNAME} autoconf
+
+    autotools_select_versions
+    if [[ ! -f testsuite.at ]] ; then
+        echo
+        eerror "No testsuite.at present in ${PWD##*/}!"
+        echo
+        die "No testsuite.at present in ${PWD##*/}!"
+    fi
+
+    autotools_run_tool autom4te -l Autotest -o testsuite testsuite.at "$@"
+}
+
+eautomake() {
+    illegal_in_global_scope
+
+    if [[ -z $(autotools_check_macro "AM_INIT_AUTOMAKE") ]] ; then
+        echo "eautomake: no AM_INIT_AUTOMAKE in configure.{ac,in}"
+        echo "eautomake: not running automake"
+        return 0
+    fi
+
+    autotools_must_require ${FUNCNAME} automake
+
+    autotools_select_versions
+    local -a extra_opts
+
+    if [[ -z ${FROM_EAUTORECONF} && ( -f Makefile.in || -f GNUMakefile.in ) ]]; then
+        local used_automake installed_automake
+
+        installed_automake=$(automake --version | head -n 1 | \
+            sed -e 's:.*(GNU automake) ::')
+        used_automake=$(head -n 1 < Makefile.in | \
+            sed -e 's:.*by automake \(.*\) from .*:\1:')
+
+        if [[ ${installed_automake} != ${used_automake} ]]; then
+            einfo "Automake used for the package (${used_automake}) differs from the installed version (${installed_automake})."
+            eautoreconf
+            return 0
+        fi
+    fi
+
+    [[ -f INSTALL && -f AUTHORS && -f ChangeLog && -f NEWS ]] \
+        || extra_opts+=( --foreign )
+
+    # --force-missing seems not to be recognized by some flavours of automake
+    automake --help | grep -q -e '--force-missing' && extra_opts+=( --force-missing )
+
+    autotools_run_tool automake --add-missing --copy ${extra_opts[@]} "$@"
+}
+
+# Internal function to run an autotools' tool
+autotools_run_tool() {
+    illegal_in_global_scope
+
+    autotools_select_versions
+    local ret=0
+
+    echo "$@"
+    "$@"
+    ret=$?
+
+    if [[ ${ret} != 0 && ${NO_FAIL} != 1 ]]; then
+        eerror "Failed Running $1 !"
+        die "Failed Running $1 !"
+    fi
+}
+
+# Internal function to check for support
+autotools_check_macro() {
+    illegal_in_global_scope
+
+    autotools_select_versions
+    [[ -f configure.ac || -f configure.in ]] && \
+        autoconf --trace=$1 2>/dev/null
+    return 0
+}
+
+# Internal function to get additional subdirs to configure
+autotools_get_subdirs() {
+    illegal_in_global_scope
+
+    autotools_select_versions
+
+    local subdirs_scan_out
+    subdirs_scan_out=$(autotools_check_macro "AC_CONFIG_SUBDIRS")
+
+    [[ -n ${subdirs_scan_out} ]] || return 0
+
+    local line subdirs=()
+    while read line; do
+        if [[ ${line} == *AC_CONFIG_SUBDIRS:* ]]; then
+            subdirs+=( ${line#*AC_CONFIG_SUBDIRS:} )
+        fi
+    done <<< "${subdirs_scan_out}"
+
+    echo ${subdirs[*]}
+    return 0
+}
+
+autotools_get_auxdir() {
+    illegal_in_global_scope
+
+    autotools_select_versions
+    local auxdir_scan_out
+
+    auxdir_scan_out=$(autotools_check_macro "AC_CONFIG_AUX_DIR")
+
+    if [[ ${auxdir_scan_out} == *AC_CONFIG_AUX_DIR:* ]]; then
+        echo ${auxdir_scan_out#*AC_CONFIG_AUX_DIR:}
+    fi
+    return 0
+}
+
+autotools_src_prepare() {
+    default
+
+    eautoreconf
+}
+

@@ -1,0 +1,7 @@
+SUMMARY="A tiny example port"
+DESCRIPTION="An example Exheres recipe for testing PIE."
+HOMEPAGE="https://example.invalid/hello"
+DOWNLOADS="https://example.invalid/hello-1.0.tar.gz"
+LICENCES="MIT"
+DEPENDENCIES="dev-lang/python dev-util/cmake"
+RDEPENDENCIES="dev-lang/python"

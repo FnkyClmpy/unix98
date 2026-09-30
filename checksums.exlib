@@ -1,0 +1,32 @@
+# Copyright 2009 Mike Kelly
+# Distributed under the terms of the GNU General Public License v2
+
+# This is a horrible evil hack, but it lets us handle cases where upstream doesn't properly version
+# their tarballs. When the sha1 no longer checks, it's time for a bump. In most of these sorts of
+# cases, we should just mirror the tarball ourselves. But, for the cases where licensing terms
+# disallow that, but don't force us to go the RESTRICT="fetch" route, this seems like a fair
+# compromise.
+
+# sha1 is an array of filename=sha1 values. For example:
+#
+#   require checksums [ sha1=[ ${PNV}.tar.gz=08e9f302ef6518eb47e470c33b83fdad7f94769e ] ]
+myexparam sha1[]
+
+exparam -v CHECKSUMS_SHA1 sha1[@]
+
+export_exlib_phases src_fetch_extra
+
+checksums_src_fetch_extra() {
+    local x f s
+    for x in "${CHECKSUMS_SHA1[@]}" ; do
+        f="${x%=*}" ; s="${x#*=}"
+        has "${f}" ${ARCHIVES} || continue
+        if [[ "$(sha1sum "${FETCHEDDIR}/${f}")" == "${s}  ${FETCHEDDIR}/${f}" ]] ; then
+            einfo "${f}... SHA1 OK"
+        else
+            sha1sum "${FETCHEDDIR}/${f}"
+            die "${f}... SHA1 failed"
+        fi
+    done
+}
+
