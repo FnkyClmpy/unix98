@@ -12,8 +12,10 @@ I think most of my projects will be for Exherbo.
 
 If you download this repository on Exherbo, you may have to be more specific when resolving packages. I may have one piece of software packaged for KISS Linux and another for Exherbo/exheres,
 They will have slightly different names; for example:
+
 For KISS:
 unix98/hyfetchKiss
+For EXHERBO:
 unix98/hyfetchHerbo
 
 Got it? Okay, bye.
