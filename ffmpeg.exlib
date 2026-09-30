@@ -1,0 +1,164 @@
+# Copyright Calvin Walton <calvin.walton@kepstin.ca>
+# Distributed under the terms of the GNU General Public License v2
+
+# # Parameters
+#
+# ## abis (array, default: [ "${FFMPEG_AVAILABLE_ABIS[@]}" ])
+#
+# FFmpeg ABIs that are compatible with this package. By default, all FFmpeg ABIs are permitted.
+# This option's value is a list of ffmpeg slots. In general, the slot is the same as the FFmpeg
+# major version.
+#
+# ## options (string, default: "")
+#
+# Option dependency specifications to append to the media/ffmpeg package dependency. Dependencies
+# must be in square brackets, like "[av1-encode][pulseaudio?]"
+#
+# ## min_versions (array, default: [])
+#
+# A list of minimum working ffmpeg versions for different ffmpeg abis. Each min_version listed will
+# be applied to the ffmpeg slot matching the same major version. See the example below.
+#
+# ## dep (boolean, default: true)
+#
+# Whether to add a build+run dependency on ffmpeg for the selected abi. If you need the ffmpeg
+# dependency with different labels or the default dependency otherwise isn't appropriate, set
+# dep=false. You can use the print_ffmpeg_dependencies function to help add your own deps.
+#
+# ## with_opt (boolean, default: false)
+#
+# Whether the package has an option to enable its use of ffmpeg libraries.
+#
+# ## option_name (string, default: "ffmpeg")
+#
+# The name of the option used to enable use of ffmpeg libraries.
+#
+# # Phases
+#
+# ## ffmpeg_pkg_setup
+#
+# Configures PKG_CONFIG_PATH to find the selected FFmpeg ABI.
+#
+# This does not do anything to set up the include path or library linking path for applications that
+# do not use pkg-config to find ffmpeg. If you need to handle this case, see the
+# ffmpeg_alternatives_prefix function.
+#
+# # Functions
+#
+# ## print_ffmpeg_dependencies
+#
+# Prints a line of the form "ffmpeg_abis:X? ( media/ffmpeg:X${FFMPEG_OPTIONS} )" for each available
+# ffmpeg abi X. This is used to create the default ffmpeg dependencies, but it can be called by an
+# exheres if you need special handling. (For example, an option with one name on your package
+# requires an option with a different name to be enabled on ffmpeg.)
+#
+# ## ffmpeg_alternatives_prefix
+#
+# Prints the prefix of the specific ffmpeg version's alternatives directory. This is useful for
+# integrating with build systems that don't use pkg-config, and therefore would find the system
+# ffmpeg (selected with eclectic) rather than the version selected with FFMPEG_ABIS suboption.
+#
+# For example, on a build system that doesn't do any proper library searching at all:
+#     CFLAGS+=" -I$(ffmpeg_alternatives_prefix)/include"
+#     LDFLAGS+=" -L$(ffmpeg_alternatives_prefix)/lib"
+# On a package that uses cmake find_file/find_library/find_path functions instead of the
+# FindPkgConfig module to locate ffmpeg:
+#     CMAKE_SRC_CONFIGURE_PARAMS=(
+#         -DCMAKE_FIND_ROOT_PATH:PATH="$(ffmpeg_alternatives_prefix);/usr/$(exhost --target)"
+#     )
+#
+# # Example
+#
+# require ffmpeg [ abis=[ 8 9 ] min_versions=[ 8.1 ] options="[h264]" with_opt=true ]
+#
+# generates:
+#
+# MYOPTIONS="
+#     ffmpeg? (
+#         ( ffmpeg_abis: 8 9 ) [[ number-selected = exactly-one ]]
+#     )
+# "
+# DEPENDENCIES="
+#     build+run:
+#         ffmpeg_abis:8? ( media/ffmpeg:8[>=8.1][h264] )
+#         ffmpeg_abis:9? ( media/ffmpeg:9[h264] )
+# "
+
+myexparam abis=[ ]
+myexparam options=
+myexparam min_versions=[ ]
+myexparam -b dep=true
+myexparam -b with_opt=false
+
+exparam -v FFMPEG_REQUESTED_ABIS abis[@]
+exparam -v FFMPEG_OPTIONS options
+if exparam -b with_opt ; then
+    myexparam option_name=ffmpeg
+    exparam -v FFMPEG_OPTION_NAME option_name
+fi
+
+FFMPEG_AVAILABLE_ABIS=( 4 5 6 7 8 9 )
+
+if [[ ${#FFMPEG_REQUESTED_ABIS[@]} -eq 0 ]] ; then
+    FFMPEG_FILTERED_ABIS=( "${FFMPEG_AVAILABLE_ABIS[@]}" )
+else
+    FFMPEG_FILTERED_ABIS=()
+
+    for abi in "${FFMPEG_REQUESTED_ABIS[@]}" ; do
+        if has "${abi}" "${FFMPEG_AVAILABLE_ABIS[@]}" ; then
+            FFMPEG_FILTERED_ABIS+=( "${abi}" )
+        fi
+    done
+
+    if [[ ${#FFMPEG_FILTERED_ABIS[@]} -eq 0 ]] ; then
+        die "None of the compatible FFmpeg ABIs are available"
+    fi
+fi
+
+MYOPTIONS+="
+    $(exparam -b with_opt && echo "${FFMPEG_OPTION_NAME}")
+    $(exparam -b with_opt && echo "${FFMPEG_OPTION_NAME}?") (
+        ( ffmpeg_abis: ${FFMPEG_FILTERED_ABIS[*]} ) [[ number-selected = exactly-one ]]
+    )
+"
+
+print_ffmpeg_dependencies() {
+    local -a FFMPEG_MIN_VERSIONS
+    exparam -v FFMPEG_MIN_VERSIONS min_versions[@]
+    local abi min_version version
+    for abi in "${FFMPEG_FILTERED_ABIS[@]}" ; do
+        version=
+        for min_version in "${FFMPEG_MIN_VERSIONS[@]}" ; do
+            if [[ $(ever major ${min_version}) == ${abi} ]] ; then
+                version="[>=${min_version}]"
+            fi
+        done
+        echo "ffmpeg_abis:${abi}? ( media/ffmpeg:${abi}${version}${FFMPEG_OPTIONS} )"
+    done
+}
+
+if exparam -b dep ; then
+    DEPENDENCIES="
+        build+run:
+            $(exparam -b with_opt && echo "${FFMPEG_OPTION_NAME}?") (
+                $(print_ffmpeg_dependencies)
+            )
+    "
+fi
+
+export_exlib_phases pkg_setup
+
+ffmpeg_pkg_setup() {
+    exparam -b with_opt && { optionq "${FFMPEG_OPTION_NAME}" || return ; }
+
+    local IFS=: path
+
+    local pkg_config_path=( "$(ffmpeg_alternatives_prefix)/lib/pkgconfig" )
+    for path in ${PKG_CONFIG_PATH} ; do pkg_config_path+=( "${path}" ) ; done
+    edo export PKG_CONFIG_PATH="${pkg_config_path[*]}"
+}
+
+ffmpeg_alternatives_prefix() {
+    echo "/etc/env.d/alternatives/ffmpeg/${FFMPEG_ABIS}/usr/$(exhost --target)"
+}
+

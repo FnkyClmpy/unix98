@@ -1,0 +1,22 @@
+# Copyright 2009 Ingmar Vanhassel
+# Copyright 2010 Jan Meier <jan@codejunky.org>
+# Distributed under the terms of the GNU General Public License v2
+
+myexparam suffix=tar.gz
+myexparam branch=$(ever range 1-2)
+myexparam pn=${MY_PN:-${PN}}
+myexparam project=$(exparam pn)
+myexparam pv=${MY_PV:-${PV}}
+myexparam pnv=${MY_PNV:-$(exparam pn)-$(exparam pv)}
+
+HOMEPAGE="https://launchpad.net/$(exparam project)/"
+WORK="${WORKBASE}/$(exparam pnv)"
+
+if ! ever is_scm; then
+    DOWNLOADS="${HOMEPAGE}$(exparam branch)/$(exparam pv)/+download/$(exparam pnv).$(exparam suffix)"
+fi
+
+# See RDF data @ ${HOMEPAGE}$(exparam branch)/${PV}/+rdf
+REMOTE_IDS+=" launchpad:$(exparam project)/$(exparam branch) "
+UPSTREAM_RELEASE_NOTES="${HOMEPAGE}$(exparam branch)/$(exparam pv)/"
+

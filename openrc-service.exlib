@@ -1,0 +1,132 @@
+# Copyright 2016 Julian Ospald <hasufell@posteo.de>
+# Distributed under the terms of the GNU General Public License v2
+
+# Purpose: an exlib dealing with openrc service files
+# Maintainer: Julian Ospald <hasufell@posteo.de>
+# Exported phases: none
+# Side-effects: - sets MYOPTIONS depending on 'do_parts' exparam
+#               - sets and exports OPENRC_INITD_DIR
+#               - sets and exports OPENRC_CONFD_DIR
+#               - sets _openrc_expart_files (internal use only)
+#
+# Usage
+#   exparams: - openrc_initd_files: list of files or directories to install
+#                                   init.d files from (default: [ "${FILES}"/openrc/initd ])
+#             - openrc_confd_files: list of files or directories to install
+#                                   conf.d files from (default: [ ])
+#             - do_parts: whether to install openrc files as parts (default: true)
+#
+# Example:
+# - add openrc files to "${FILES}"/openrc/initd and "${FILES}"/openrc/confd
+# - add exlib: require openrc-service [ openrc_confd_files=[ "${FILES}"/openrc/confd ] ]
+# - call 'install_openrc_files' at the end of src_install
+
+
+myexparam openrc_initd_files=[ "${FILES}"/openrc/initd ]
+myexparam openrc_confd_files=[ ] # by default empty since confd files are optional
+myexparam -b do_parts=true
+
+export OPENRC_INITD_DIR="/etc/init.d"
+export OPENRC_CONFD_DIR="/etc/conf.d"
+
+exparam -v _do_parts do_parts
+
+# add parts option
+if [[ ${_do_parts} == true ]] ; then
+    MYOPTIONS="parts: openrc [[ description = [ OpenRC service files ] ]]"
+fi
+
+# Internal variable to track actual installed openrc files, so
+# we can run 'expart' on them, without resorting to 'exparam <dir>',
+# which may record unwanted files.
+_openrc_expart_files=(  )
+
+# Installs both init.d and conf.d openrc files according to the
+# openrc_initd_files and openrc_confd_files exparams.
+#
+# Installs these files as exparts if [ do_parts=true ].
+#
+# Takes no arguments.
+install_openrc_files() {
+    if [[ "${_do_parts}" == true ]] && ! option parts:openrc;then
+        return
+    fi
+
+    exparam -v openrc_initd_files openrc_initd_files[@]
+    exparam -v openrc_confd_files openrc_confd_files[@]
+
+    [[ -n "${openrc_initd_files}" ]] &&
+        openrc_initd_doins "${openrc_initd_files[@]}"
+
+    [[ -n "${openrc_confd_files}" ]] &&
+        openrc_confd_doins "${openrc_confd_files[@]}"
+
+    if [[ "${_do_parts}" == true ]] ; then
+        openrc_expart "${_openrc_expart_files[@]}"
+    fi
+}
+
+# Installs given init.d openrc files.
+#
+# Usage: openrc_initd_doins [init.d files]
+openrc_initd_doins() {
+    _openrc_doins --initd "$@"
+}
+
+# Installs given conf.d openrc files.
+#
+# Usage: openrc_confd_doins [conf.d files]
+openrc_confd_doins() {
+    _openrc_doins --confd "$@"
+}
+
+# Internal function to abstract over openrc_initd_doins and openrc_confd_doins.
+#
+# Usage: _openrc_doins <--initd|--confd> [service files]
+_openrc_doins() {
+    local service_file
+    local fallbackdir
+    local expartdir
+    local i
+
+    # whether this is an initd or confd installation
+    if [[ ${1} == "--initd" ]] ; then
+        _openrc_cmd() { doinitd "$@" ; }
+        fallbackdir="${FILES}"/openrc/initd
+        expartdir="${OPENRC_INITD_DIR}"
+    elif [[ ${1} == "--confd" ]] ; then
+        _openrc_cmd() { doconfd "$@" ; }
+        fallbackdir="${FILES}"/openrc/confd
+        expartdir="${OPENRC_CONFD_DIR}"
+    else
+        die "Wrong use of _openrc_doins, first argument must be '--initd' or '--confd'!"
+    fi
+    shift
+
+    # install files and record them in _openrc_expart_files array
+    for service_file in "$@"; do
+        if [[ -d "${service_file}" ]]; then
+            _openrc_cmd "${service_file}"/*
+            for i in "${service_file}"/* ; do
+                _openrc_expart_files+=( "${expartdir}/${i##*/}" )
+            done
+        elif [[ -f "${service_file}" ]]; then
+            _openrc_cmd "${service_file}"
+            _openrc_expart_files+=( "${expartdir}/${service_file##*/}" )
+        else
+            _openrc_cmd "${fallbackdir}/${service_file}"
+            _openrc_expart_files+=( "${expartdir}/${service_file##*/}" )
+        fi
+    done
+}
+
+# Calls 'expart openrc' on the given files.
+#
+# Usage: openrc_expart [openrc files]
+openrc_expart() {
+    local _file
+    for _file in "$@" ; do
+        expart openrc "${_file}"
+    done
+}
+

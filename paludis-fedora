@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Run the checked-out PIE source without pip or any third-party Python package.
+set -euo pipefail
+
+launcher_path=$0
+while [ -L "$launcher_path" ]; do
+    launcher_dir=$(CDPATH= cd -- "$(dirname -- "$launcher_path")" && pwd)
+    link_target=$(readlink "$launcher_path")
+    case "$link_target" in
+        /*) launcher_path=$link_target ;;
+        *) launcher_path=$launcher_dir/$link_target ;;
+    esac
+done
+project_dir=$(CDPATH= cd -- "$(dirname -- "$launcher_path")" && pwd)
+export PYTHONPATH="$project_dir/src${PYTHONPATH:+:$PYTHONPATH}"
+exec python3 -m pie.cli "$@"

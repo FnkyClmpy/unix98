@@ -1,0 +1,187 @@
+# Copyright 2011 Elias Pipping <pipping@exherbo.org>
+# Copyright 2017 Rasmus Thomsen <Rasmus.thomsen@protonmail.com>
+# Copyright 2019 Marc-Antoine Perennou <keruspe@exherbo.org>
+# Distributed under the terms of the GNU General Public License v2
+
+myexparam pn="${PN}"
+myexparam pv="${PV/_/-}"
+myexparam dependencies_label="build+run"
+myexparam check_target="check-all"
+myexparam -b slotted=false
+myexparam -b asserts=false
+myexparam -b rtlib=false
+myexparam -b stdlib=false
+
+exparam -v MY_PN pn
+exparam -v MY_PV pv
+exparam -v DEPENDENCIES_LABEL dependencies_label
+exparam -v CHECK_TARGET check_target
+
+MY_PNV="${MY_PN}-${MY_PV}"
+
+SCM_CHECKOUT_TO="llvm-project"
+SCM_UNPACK_TO="llvm-project"
+if [[ ${PV} == scm ]]; then
+    require github [ user="llvm" pn="llvm-project" branch="main" ]
+else
+    require github [ user="llvm" pn="llvm-project" tag="llvmorg-${MY_PV}" ]
+fi
+
+require cmake [ ninja=true ]
+
+LLVM_PY_BLACKLIST=none
+ever at_least 15 && LLVM_PY_BLACKLIST=2
+
+if [[ "${PN}" == "llvm" ]]; then
+    require setup-py [ import=distutils blacklist=${LLVM_PY_BLACKLIST} has_bin=true multibuild=false ]
+else
+    require python [ blacklist=${LLVM_PY_BLACKLIST} multibuild=false ]
+fi
+require utf8-locale
+
+CMAKE_SOURCE="${WORKBASE}/llvm-project/${MY_PN}"
+
+if [[ ${PN} == "llvm" ]] ; then
+    HOMEPAGE="https://llvm.org/"
+else
+    HOMEPAGE="https://${MY_PN}.llvm.org/"
+fi
+
+LICENCES="Apache-2.0-with-LLVM-exception"
+
+# See http://blog.llvm.org/2016/12/llvms-new-versioning-scheme.html for more info
+# In "X.Y.Z", X is major release, Y is minor release, and Z is "patch" release
+# Major version is the slot, except for any LLVM with major-release < 4
+if [[ ${MY_PV} == scm ]]; then
+    LLVM_SLOT="20"
+elif ever is_scm ; then
+    LLVM_SLOT="${MY_PV%-scm}"
+else
+    LLVM_SLOT="$(ever major ${MY_PV})"
+fi
+
+if exparam -b slotted; then
+    SLOT="${LLVM_SLOT}"
+else
+    SLOT="0"
+fi
+
+if exparam -b asserts; then
+    MYOPTIONS="asserts [[ description = [ Enable assertions ] ]]"
+else
+    MYOPTIONS=""
+fi
+DEPENDENCIES=""
+
+if exparam -b rtlib; then
+    MYOPTIONS+="
+        ( providers: compiler-rt libgcc ) [[ number-selected = exactly-one ]]
+    "
+    DEPENDENCIES+="
+        ${DEPENDENCIES_LABEL}:
+            providers:compiler-rt? (
+                dev-libs/compiler-rt:$([[ "${PN}" == "compiler-rt" ]] && echo "*" || echo "=")
+                sys-libs/llvm-libunwind
+            )
+            providers:libgcc? ( sys-libs/libgcc:* )
+    "
+fi
+
+if exparam -b stdlib; then
+    MYOPTIONS+="
+        ( providers: libc++ libstdc++ ) [[ number-selected = exactly-one ]]
+    "
+    DEPENDENCIES+="
+        ${DEPENDENCIES_LABEL}:
+            providers:libc++? (
+                sys-libs/libc++
+                sys-libs/libc++abi
+            )
+            providers:libstdc++? ( sys-libs/libstdc++:* )
+    "
+fi
+
+if [[ "${MY_PN}" != "llvm" ]]; then
+    DEPENDENCIES+="
+        build+test:
+            dev-lang/llvm:${LLVM_SLOT} [[ note = [ For llvm-config and CMake modules ] ]]
+    "
+fi
+
+LLVM_PREFIX="/usr/$(exhost --target)/lib/llvm/${LLVM_SLOT}"
+
+CMAKE_SRC_CONFIGURE_PARAMS=(
+    --hates=CMAKE_BUILD_TYPE
+    -DCMAKE_BUILD_TYPE=Release
+
+    # Setup the right toolchain for NATIVE binaries during cross-compilation
+    -DCROSS_TOOLCHAIN_FLAGS_NATIVE:STRING="-DCMAKE_C_COMPILER=$(exhost --build)-cc;-DCMAKE_CXX_COMPILER=$(exhost --build)-c++"
+    -DLLVM_HOST_TRIPLE:STRING="$(exhost --build)"
+
+    -DLLVM_MAIN_SRC_DIR="${WORKBASE}/llvm-project/llvm"
+    -DLLVM_LIT_ARGS:STRING="-sv"
+
+    # This only controls whether or not LLVM's utils link against the dylib.
+    -DLLVM_LINK_LLVM_DYLIB:BOOL=ON
+
+    # Enable RTTI by default, Upstream and projects which need it (like mesa)
+    # strongly recommend enabling it. Enabling it only costs a little disk space.
+    -DLLVM_ENABLE_RTTI:BOOL=ON
+
+    # Enable exception handling by default, it is basically free to build this
+    # and some projects depend on it.
+    -DLLVM_ENABLE_EH:BOOL=ON
+
+    -DLLVM_ENABLE_PIC:BOOL=ON
+)
+
+if ever at_least 16 ; then
+    CMAKE_SRC_CONFIGURE_PARAMS+=( -DPython3_EXECUTABLE:PATH="${PYTHON}" )
+else
+    CMAKE_SRC_CONFIGURE_PARAMS+=( -DPYTHON_EXECUTABLE:PATH="${PYTHON}" )
+fi
+
+if ever at_least 14.0.0; then
+    if [[ "${MY_PN}" != "llvm" && "${MY_PN}" != lib* ]]; then
+        CMAKE_SRC_CONFIGURE_PARAMS+=( -DLLVM_DIR:STRING="${LLVM_PREFIX}"/lib/cmake/llvm/ )
+    fi
+else
+    if [[ "${MY_PN}" != "llvm" ]]; then
+        CMAKE_SRC_CONFIGURE_PARAMS+=( -DLLVM_DIR:STRING="${LLVM_PREFIX}"/lib/cmake/llvm/ )
+    fi
+fi
+
+CMAKE_SRC_CONFIGURE_OPTIONS=()
+
+if exparam -b asserts; then
+    CMAKE_SRC_CONFIGURE_OPTIONS+=(
+        'asserts LLVM_ENABLE_ASSERTIONS'
+    )
+fi
+
+export_exlib_phases pkg_setup src_unpack src_test src_test_expensive
+
+llvm-project_pkg_setup() {
+    default
+
+    # Require UTF-8 locale for python tests dealing with Unicode
+    require_utf8_locale
+}
+
+llvm-project_src_unpack() {
+    cmake_src_unpack
+    if ! ever is_scm; then
+        edo ln -s "${WORKBASE}"/llvm-project{-llvmorg-${MY_PV},}
+    fi
+}
+
+llvm-project_src_test() {
+    require_utf8_locale
+    eninja "${CHECK_TARGET}"
+}
+
+llvm-project_src_test_expensive() {
+    require_utf8_locale
+    eninja "${CHECK_TARGET}"
+}
+

@@ -1,0 +1,96 @@
+# Copyright 2024 David Legrand <david.legrand@clever-cloud.com>
+# Copyright 2018 Danilo Spinella <danyspin97@protonmail.com>
+# Distributed under the terms of the GNU General Public License v3
+# Based in part upon 'cargo.exlib', which is:
+#     Copyright 2016 Marc-Antoine Perennou
+# Based in part upon 'python.exlib', which is:
+#     Copyright 2015 Pierre Lejeune
+
+myexparam go_minimum_version=1.23
+
+# bin_path: use if the binary is built in a specific directory
+# package_path: use if the package sources are in a specific directory (e.g. ./cmd/pkg)
+myexparam bin_name=${PN}
+myexparam bin_path=""
+myexparam package_path=""
+
+exparam -v BIN_NAME bin_name
+exparam -v BIN_PATH bin_path
+exparam -v PACKAGE_PATH package_path
+
+export_exlib_phases src_unpack src_compile src_install src_test
+
+DEPENDENCIES="
+    build:
+        dev-lang/go[>=$(exparam go_minimum_version)]
+"
+
+go_mod_download() {
+    edo pushd "${WORK}"
+    esandbox disable_net
+    edo go mod download -x
+    esandbox enable_net
+    edo popd
+}
+
+go_src_unpack() {
+    default
+    go_mod_download
+}
+
+go_src_compile() {
+
+    # The following variable allow to manage Go build parameters, with conservative defaults
+    # -buildmode=pie: build the binary as a Position Independent Executable
+    # -mod=readonly: do not modify go.mod or go.sum during build
+    # -trimpath: remove all file system paths, better for reproducibility
+    #
+    # Additionally it supports a '--hates' parameter analog to the one in econf, which can be used to disable
+    # some of the default options that are always passed to the go build. This should only be used if a
+    # project does not accept a specific option and fails to build as a result of it beeing used.
+    # Example: To block '-buildmode=pie' pass '--hates=buildmode' to go_src_compile.
+    #          '--hates' can be passed directly or via GO_SRC_COMPILE_PARAMS.
+
+    local cleaned_params=() default_params=() go_params=() hates=()
+
+    default_params=(
+        "-trimpath"
+        "-buildmode=pie"
+        "-mod=readonly"
+    )
+
+    for param in "${GO_SRC_COMPILE_PARAMS[@]}"; do
+        case "${param}" in
+            --hates=*) hates+=( "${param#--hates=}" ) ;;
+            *) go_params+=( "${param}" ) ;;
+        esac
+    done
+
+    for param in "${default_params[@]}" "${go_params[@]}"; do
+        param_name=${param%%=*}
+        has "${param_name#-}" "${hates[@]}" || cleaned_params+=( "${param}" )
+    done
+
+    edo go build -p ${EXJOBS:-1} -o "${BIN_PATH:+${BIN_PATH}/}${BIN_NAME}"\
+        "${cleaned_params[@]}"\
+        ${GO_SRC_COMPILE_TAGS:+-tags "${GO_SRC_COMPILE_TAGS[*]}"}\
+        ${GO_SRC_COMPILE_LDFLAGS[*]:+-ldflags "${GO_SRC_COMPILE_LDFLAGS[*]}"}\
+        "${@}" \
+        "${PACKAGE_PATH:-.}"
+}
+
+go_src_install() {
+    emagicdocs
+    if [[ -d "${WORKBASE}/${PNV}" && "${WORK}" != "${WORKBASE}/${PNV}" ]]; then
+        edo pushd "${WORKBASE}/${PNV}"
+        emagicdocs
+        edo popd
+    fi
+
+    dobin "${BIN_PATH:+${BIN_PATH}/}${BIN_NAME}"
+}
+
+go_src_test() {
+   edo go test -v "${PACKAGE_PATH:+${PACKAGE_PATH}/...}"
+}
+

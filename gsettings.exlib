@@ -1,0 +1,28 @@
+# Copyright 2010 Saleem Abdulrasool <compnerd@compnerd.org>
+# Distributed under the terms of the GNU General Purpose License v2
+
+: ${GLIB_COMPILE_SCHEMAS:=${ROOT}usr/$(exhost --build)/bin/glib-compile-schemas}
+
+export_exlib_phases src_install pkg_postinst pkg_postrm
+
+gsettings_exlib_compile_gsettings_schemas() {
+    echo "${GLIB_COMPILE_SCHEMAS}" "${ROOT}usr/share/glib-2.0/schemas/"
+    XDG_DATA_DIRS= "${GLIB_COMPILE_SCHEMAS}" "${ROOT}usr/share/glib-2.0/schemas/"
+}
+
+gsettings_src_install() {
+    export GSETTINGS_DISABLE_SCHEMAS_COMPILE=1
+    default
+    unset GSETTINGS_DISABLE_SCHEMAS_COMPILE
+}
+
+gsettings_pkg_postinst() {
+    default
+    gsettings_exlib_compile_gsettings_schemas
+}
+
+gsettings_pkg_postrm() {
+    default
+    gsettings_exlib_compile_gsettings_schemas
+}
+

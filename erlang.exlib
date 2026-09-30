@@ -1,0 +1,77 @@
+# Copyright 2023 Maxime Sorin <maxime.sorin@clever-cloud.com>
+# Distributed under the terms of the GNU General Public License v2
+# Based in part upon 'lua.exlib', which is:
+#   Copyright 2009, 2011 Ali Polatel <alip@exherbo.org>
+#   Copyright 2014 Heiko Becker <heirecka@exherbo.org>
+
+# exparams:
+#   blacklist ( format: none or "a x.y" ) ( empty by default )
+#     Erlang ABIs that do not work with this package.
+#
+#     none: whitelist all abis
+#
+#     a: blacklists a.{0,1,2,...}
+#
+#     x: blacklists x
+
+#   min_versions ( format: "a.b.c x.y.z" ) ( empty by default )
+#     Minimal working version for each Erlang ABI
+#
+# example:
+#   require erlang [ blacklist="28" ]
+#
+#   generates:
+#
+#   DEPENDENCIES="
+#       build+run:
+#           erlang_abis:26? ( dev-lang/erlang:26 )
+#           erlang_abis:27? ( dev-lang/erlang:27 )
+#           erlang_abis:28? ( dev-lang/erlang:28 )
+#   "
+
+myexparam blacklist=none
+myexparam min_versions=
+exparam -v ERLANG_BLACKLIST blacklist
+exparam -v ERLANG_MIN_VERSIONS min_versions
+
+# ERLANG_AVAILABLE_ABIS below need to be in sync with
+ERLANG_AVAILABLE_ABIS="26 27 28"
+
+if [[ ${ERLANG_BLACKLIST} == none ]]; then
+    ERLANG_FILTERED_ABIS="${ERLANG_AVAILABLE_ABIS}"
+else
+    ERLANG_FILTERED_ABIS=
+
+    for abi in ${ERLANG_AVAILABLE_ABIS}; do
+        if has ${abi} ${ERLANG_BLACKLIST}; then
+            continue
+        fi
+
+        ERLANG_FILTERED_ABIS+="${abi} "
+    done
+
+    if [[ -z ${ERLANG_FILTERED_ABIS} ]]; then
+        die "All available Erlang ABI have been blacklisted"
+    fi
+fi
+
+MYOPTIONS=" ( ( erlang_abis: ( ${ERLANG_FILTERED_ABIS} ) [[ number-selected = exactly-one ]] ) )"
+DEPENDENCIES="build+run: ( ( "
+for abi in ${ERLANG_FILTERED_ABIS};  do
+    DEPENDENCIES+="erlang_abis:${abi}? ( dev-lang/erlang:${abi}"
+    for min_version in ${ERLANG_MIN_VERSIONS}; do
+        if [[ $(ever major ${min_version}) == ${abi} ]]; then
+            DEPENDENCIES+="[>=${min_version}]"
+            break
+        fi
+    done
+    DEPENDENCIES+=" ) "
+done
+DEPENDENCIES+=") )"
+
+erlang_get_abi() {
+    illegal_in_global_scope
+
+    echo -n "${ERLANG_ABIS}"
+}
+

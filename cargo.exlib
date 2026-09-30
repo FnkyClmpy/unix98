@@ -1,0 +1,253 @@
+# Copyright 2016 Marc-Antoine Perennou
+# Distributed under the terms of the GNU General Public License v2
+
+# Exparams:
+#   debug ( format: true or false, defaults to false )
+#     Adds a debug option to the package; depending on its state --debug or
+#     --release will be added to default cargo invocations
+#   crate_path ( format: path, defaults to "." )
+#     Relative path to the crate to build and install
+#     used with --manifest-path (vendor, build) and --path (install)
+myexparam crate=${PN}
+myexparam crate_path="."
+myexparam rust_minimum_version=1.38.0
+myexparam channel=all
+myexparam -b debug=false
+myexparam -b disable_default_features=false
+myexparam -b static=false
+myexparam static_opt=static
+myexparam -b with_opt=false
+
+if exparam -b with_opt; then
+    myexparam option_name=rust
+    exparam -v CARGO_OPTION_NAME option_name
+fi
+
+exparam -v CRATE crate
+exparam -v CRATE_PATH crate_path
+exparam -v RUST_CHANNEL channel
+exparam -v CARGO_STATIC_OPT static_opt
+
+require rust
+
+HOMEPAGE="https://crates.io/crates/${CRATE}"
+if [[ $(type -t scm_src_unpack) == function ]]; then
+   DOWNLOADS=""
+else
+   DOWNLOADS="https://static.crates.io/crates/${CRATE}/${PV}/download -> ${PNV}.tar.gz"
+fi
+
+WORK="${WORKBASE}/${CRATE}-${PV}"
+CARGO_CONFIG_TOML_DIR="${WORKBASE}"/.cargo
+
+if [[ "${CATEGORY}/${PN}" != "dev-lang/rust" ]]; then
+    rust_slot_requirement() {
+        case ${RUST_CHANNEL} in
+            stable|beta|nightly)
+                echo ${RUST_CHANNEL}
+                ;;
+            all)
+                echo "*"
+                ;;
+            same)
+                echo "="
+                ;;
+            *)
+                eerror "Invalid channel: ${RUST_CHANNEL}"
+        esac
+    }
+
+    rust_dep="dev-lang/rust:$(rust_slot_requirement)[>=$(exparam rust_minimum_version)]"
+    if exparam -b with_opt ; then
+        rust_dep="$(exparam option_name)? ( ${rust_dep} )"
+    fi
+
+    if exparam -b debug ; then
+        MYOPTIONS+=" debug "
+    fi
+    if exparam -b static && [[ -n "${CARGO_STATIC_OPT}" ]]; then
+        MYOPTIONS+=" ${CARGO_STATIC_OPT} [[ description = [ Tell Cargo to build statically ] ]] "
+    fi
+
+    DEPENDENCIES="
+        build:
+            ${rust_dep}
+    "
+fi
+
+export_exlib_phases src_unpack src_configure src_compile src_test src_install
+
+export CARGO_HOME="${FETCHEDDIR}/cargo-home/"
+
+# git2-rs (thus all its dependents, including cargo) has a very fragile dependency on libgit2.
+# Let it use the bundled version to be on the safe side.
+export LIBGIT2_NO_PKG_CONFIG=1
+
+cargo_get_tool() {
+    local tool=${1}
+
+    case ${RUST_CHANNEL} in
+        stable|beta|nightly)
+            echo ${tool}-${RUST_CHANNEL}
+            ;;
+        *)
+            echo ${tool}
+            ;;
+    esac
+}
+
+ecargo() {
+    local cmd="${1}"
+    local params=()
+    local features=()
+    local feature
+    local feat
+
+    shift
+
+    if [[ -n "${CARGO_OPTION_NAME}" ]] && ! option ${CARGO_OPTION_NAME}; then
+        return
+    fi
+
+    if [[ "${cmd}" != "fetch" && "${cmd}" != "vendor" ]]; then
+        if exparam -b disable_default_features; then
+            params+=( --no-default-features )
+        fi
+
+        for feature in "${ECARGO_FEATURES[@]}"; do
+            features+=( ${feature} )
+        done
+        for feature in "${ECARGO_FEATURE_ENABLES[@]}"; do
+            feat=$(option ${feature})
+            if [[ -n "${feat}" ]]; then
+                features+=( ${feat} )
+            fi
+        done
+
+        if [[ ${#features[@]} != 0 ]]; then
+            params+=( --features "${features[*]}" )
+        fi
+    fi
+
+    esandbox allow "${CARGO_HOME}"
+    RUSTC="${RUSTC:-$(cargo_get_tool rustc)}" RUSTDOC="${RUSTDOC:-$(cargo_get_tool rustdoc)}" edo "${CARGO:-$(cargo_get_tool cargo)}" "${cmd}" "${params[@]}" "${@}"
+    esandbox disallow "${CARGO_HOME}"
+}
+
+ecargo_fetch() {
+    # TODO(keruspe): nuke that when we handle system-wide deps properly
+    # This issue would make things better already: https://github.com/rust-lang/cargo/issues/2998
+
+    # Fetch dependencies before further offline processing
+    edo mkdir -p "${CARGO_CONFIG_TOML_DIR}"
+    esandbox disable_net
+    local manifest_dir=${PWD}/${CRATE_PATH}
+    pushd "${WORKBASE}"
+    ecargo vendor --no-delete --manifest-path "${manifest_dir}/Cargo.toml" ecargo-vendor > "${CARGO_CONFIG_TOML_DIR}"/config.toml
+    popd
+    esandbox enable_net
+    edo tee -a "${CARGO_CONFIG_TOML_DIR}"/config.toml <<EOF
+[net]
+offline = true
+EOF
+}
+
+ecargo_config() {
+    # Tell cargo to be verbose, respect EXJOBS and linker
+    local crt_static
+    edo mkdir -p "${CARGO_CONFIG_TOML_DIR}"
+
+    if exparam -b static; then
+        if [[ -z "${CARGO_STATIC_OPT}" ]] || option ${CARGO_STATIC_OPT}; then
+            crt_static="+crt-static"
+        else
+            crt_static="-crt-static"
+        fi
+    else
+        crt_static="-crt-static"
+    fi
+
+    local extra_rustflag extra_rustflags=""
+    for extra_rustflag in "${ECARGO_EXTRA_RUSTFLAGS[@]}"; do
+        extra_rustflags+=", \"${extra_rustflag}\""
+    done
+
+    edo tee -a "${CARGO_CONFIG_TOML_DIR}"/config.toml <<EOF
+[term]
+verbose = true
+[build]
+jobs = ${EXJOBS:-1}
+target = "$(rust_target_arch_name)"
+[target.$(rust_target_arch_name)]
+linker = "$(exhost --tool-prefix)cc"
+rustflags = ["-C", "target-feature=${crt_static}"${extra_rustflags}]
+EOF
+}
+
+cargo_src_unpack() {
+    if [[ $(type -t scm_src_unpack) == function ]]; then
+        scm_src_unpack
+    else
+        default
+    fi
+
+    edo cd "${WORK}"
+
+    ecargo_fetch
+}
+
+cargo_src_configure() {
+    ecargo_config
+}
+
+cargo_src_compile() {
+    local cargo_compile_params=( --frozen )
+    [[ "${CRATE_PATH}" != "." ]] && cargo_compile_params+=( --manifest-path="${CRATE_PATH}/Cargo.toml" )
+
+    if exparam -b debug ; then
+        option debug || cargo_compile_params+=( --release )
+    else
+        cargo_compile_params+=( --release )
+    fi
+
+    ecargo build "${cargo_compile_params[@]}" "${CARGO_SRC_COMPILE_PARAMS[@]}"
+}
+
+cargo_src_test() {
+    local cargo_test_params=( --frozen )
+    [[ "${CRATE_PATH}" != "." ]] && cargo_test_params+=( --manifest-path="${CRATE_PATH}/Cargo.toml" )
+
+    if exparam -b debug ; then
+        option debug || cargo_test_params+=( --release )
+    else
+        cargo_test_params+=( --release )
+    fi
+
+    ecargo test "${cargo_test_params[@]}" "${CARGO_SRC_TEST_PARAMS[@]}" "${@}"
+}
+
+ecargo_install() {
+    ecargo install "${@}"
+
+    nonfatal edo rm "${IMAGE}/usr/$(exhost --target)/.crates.toml"
+    nonfatal edo rm "${IMAGE}/usr/$(exhost --target)/.crates2.json"
+    # [[ -d man/ ]] && doman man/*
+    [[ -d man/ ]] && find man -type f -exec doman {} \;
+}
+
+cargo_src_install() {
+    local cargo_install_params=(
+        --path="${CRATE_PATH}"
+        --root="${IMAGE}"/usr/$(exhost --target)
+        --frozen
+    )
+
+    if exparam -b debug ; then
+        option debug && cargo_install_params+=( --debug )
+    fi
+
+    ecargo_install "${cargo_install_params[@]}" "${CARGO_SRC_INSTALL_PARAMS[@]}"
+
+    emagicdocs
+}
+

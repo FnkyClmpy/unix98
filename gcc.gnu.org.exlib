@@ -1,0 +1,30 @@
+# Copyright 2019 Heiko Becker <heirecka@exherbo.org>
+# Distributed under the GNU General Public License
+
+# Exlib to fetch packages part of the gcc-split set from gcc.gnu.org
+#
+# It doesn't do much, but I was really sick and tired of changing anything
+# in 9 seven places (sys-devel/gc{c,j} and its 7 split libraries we currently
+# have.
+
+# Suffix of the tarball
+myexparam suffix=tar.xz
+
+case ${CATEGORY}/${PN} in
+    sys-devel/gcj) HOMEPAGE="https://gcc.gnu.org/java/" ;;
+    sys-libs/libgomp) HOMEPAGE="https://gcc.gnu.org/projects/gomp/" ;;
+    sys-libs/libstdc++) HOMEPAGE="https://gcc.gnu.org/libstdc++/" ;;
+    *) HOMEPAGE="https://gcc.gnu.org/" ;;
+esac
+
+UPSTREAM_RELEASE_NOTES="${HOMEPAGE}gcc-${SLOT}/"
+UPSTREAM_CHANGELOG="${UPSTREAM_RELEASE_NOTES}changes.html"
+
+if [[ ${PV} == *_pre* ]] ; then
+    DOWNLOADS="ftp://gcc.gnu.org/pub/gcc/snapshots/$(ever major)-${PV##*_pre}/gcc-$(ever major)-${PV//*_pre}.$(exparam suffix)"
+elif [[ ${PV} == *-rc* ]] ; then
+    DOWNLOADS="ftp://gcc.gnu.org/pub/gcc/snapshots/${PV/rc/RC-}/gcc-${PV/rc/RC-}.$(exparam suffix)"
+else
+    DOWNLOADS="mirror://gnu/gcc/gcc-${PV}/gcc-${PV}.$(exparam suffix)"
+fi
+

@@ -1,0 +1,31 @@
+# Copyright 2009 Pierre Lejeune <superheron@gmail.com>
+# Distributed under the terms of the GNU General Public License v2
+# This exlib provides some helper function to install sys-apps/db
+# Exparams :
+#   Slot : if provided, use this db slot instead of the best installed
+
+myexparam slot=0
+
+berkdb_slot() {
+    illegal_in_global_scope
+    local db_pkg="", db_ver=""
+    exparam -v db_ver slot
+    if [[ ${db_ver} -eq 0 ]]; then
+        db_pkg=$(best_version --slash sys-libs/db)
+        db_pkg=${db_pkg%%:*}
+        db_ver=$(ever range 1-2 ${db_pkg##sys-libs/db-})
+    fi
+    echo -n ${db_ver}
+}
+
+berkdb_includedir() {
+    illegal_in_global_scope
+    local db_ver=$(berkdb_slot)
+    if [[ -d /usr/include/db${db_ver} ]]; then
+        echo -n "/usr/include/db${db_ver}"
+    else
+        eerror "Include dir not found"
+        return 1
+    fi
+}
+

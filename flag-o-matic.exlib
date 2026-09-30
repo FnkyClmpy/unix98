@@ -1,0 +1,354 @@
+# Copyright 1999-2007 Gentoo Foundation
+# Distributed under the terms of the GNU General Public License v2
+# $Header: /var/cvsroot/gentoo-x86/eclass/flag-o-matic.eclass,v 1.119 2007/05/12 11:45:51 vapier Exp $
+
+#### filter-flags <flags> ####
+# Remove particular flags from C[XX]FLAGS
+# Matches only complete flags
+#
+#### append-flags <flags> ####
+# Add extra flags to your current C[XX]FLAGS
+#
+#### append-cxxflags <flags> ####
+# Add extra flags to your current CXXFLAGS
+#
+#### replace-flags <orig.flag> <new.flag> ###
+# Replace a flag by another one
+#
+#### strip-flags ####
+# Strip C[XX]FLAGS of everything except known
+# good options.
+#
+#### strip-unsupported-flags ####
+# Strip C[XX]FLAGS of any flags not supported by
+# installed version of gcc
+#
+#### get-flag <flag> ####
+# Find and echo the value for a particular flag
+#
+#### replace-sparc64-flags ####
+# Sets mcpu to v8 and uses the original value
+# as mtune if none specified.
+#
+#### filter-mfpmath <math types> ####
+# Remove specified math types from the fpmath specification
+# If the user has -mfpmath=sse,386, running `filter-mfpmath sse`
+# will leave the user with -mfpmath=386
+#
+#### append-supported-flags-cc ####
+# Add flags to CC if they are in C[XX]FLAGS and if they are
+# supported by the compiler
+#
+#### multibuild-m32-cc ####
+# Adds -m32 to CC if applicable for the multibuild stage
+# and removes it from CC if not. Used to manage the -m32 for
+# exheres' that do not respect CFLAGS but use CC.
+# Parameter should be ${MULTIBUILD_TARGET}.
+#
+#### append-ldflags ####
+# Add extra flags to your current LDFLAGS
+#
+#### filter-ldflags <flags> ####
+# Remove particular flags from LDFLAGS
+# Matches only complete flags
+#
+
+# C[XX]FLAGS that we allow in strip-flags
+# Note: shell globs and character lists are allowed
+setup-allowed-flags() {
+    illegal_in_global_scope
+
+    if [[ -z ${ALLOWED_FLAGS} ]] ; then
+        export ALLOWED_FLAGS="-pipe"
+        export ALLOWED_FLAGS="${ALLOWED_FLAGS} -O -O0 -O1 -O2 -O3 -Os -mcpu -march -mtune"
+        export ALLOWED_FLAGS="${ALLOWED_FLAGS} -fstack-protector -fstack-protector-all"
+        export ALLOWED_FLAGS="${ALLOWED_FLAGS} -fbounds-checking"
+        export ALLOWED_FLAGS="${ALLOWED_FLAGS} -fno-PIE -fno-pie -fno-unit-at-a-time"
+        export ALLOWED_FLAGS="${ALLOWED_FLAGS} -g -g[0-9] -ggdb -ggdb[0-9] -gstabs -gstabs+"
+        export ALLOWED_FLAGS="${ALLOWED_FLAGS} -fno-ident -freorder-blocks"
+    fi
+    # allow a bunch of flags that negate features / control ABI
+    ALLOWED_FLAGS="${ALLOWED_FLAGS} -fno-stack-protector -fno-stack-protector-all \
+        -fno-strict-aliasing -fno-bounds-checking"
+    ALLOWED_FLAGS="${ALLOWED_FLAGS} -mregparm -mno-app-regs -mapp-regs \
+        -mno-mmx -mno-sse -mno-sse2 -mno-sse3 -mno-ssse3 -mno-sse4.1 -mno-sse4.2 \
+        -mno-sse4 -mno-avx -mno-avx2 -mno-fma -mno-fma4 -mno-sse4a -mno-3dnow \
+        -mips1 -mips2 -mips3 -mips4 -mips32 -mips64 -mips16 \
+        -msoft-float -mno-soft-float -mhard-float -mno-hard-float -mfpu \
+        -mieee -mieee-with-inexact -mschedule \
+        -mtls-direct-seg-refs -mno-tls-direct-seg-refs \
+        -mflat -mno-flat -mno-faster-structs -mfaster-structs \
+        -m32 -m64 -mabi -mlittle-endian -mbig-endian -EL -EB -fPIC \
+        -mlive-g0 -mcmodel -mstack-bias -mno-stack-bias \
+        -msecure-plt -D*"
+
+    return 0
+}
+
+# Remove occurrences of strings from variable given in $1
+# Strings removed are matched as globs, so for example
+# '-O*' would remove -O1, -O2 etc.
+_filter-var() {
+    illegal_in_global_scope
+
+    local f x VAR VAL
+    declare -a new
+
+    VAR=$1
+    shift
+    eval VAL=\${${VAR}}
+    for f in ${VAL}; do
+        for x in "$@"; do
+            # Note this should work with globs like -O*
+            [[ ${f} == ${x} ]] && continue 2
+        done
+        eval new\[\${\#new\[@]}]=\${f}
+    done
+    eval export ${VAR}=\${new\[*]}
+}
+
+filter-flags() {
+    illegal_in_global_scope
+
+    _filter-var CFLAGS "$@"
+    _filter-var CPPFLAGS "$@"
+    _filter-var CXXFLAGS "$@"
+    return 0
+}
+
+filter-cppflags() {
+    illegal_in_global_scope
+
+    _filter-var CPPFLAGS "$@"
+    return 0
+}
+
+append-cppflags() {
+    illegal_in_global_scope
+
+    [[ -z $* ]] && return 0
+    export CPPFLAGS="${CPPFLAGS} $*"
+    return 0
+}
+
+append-flags() {
+    illegal_in_global_scope
+
+    [[ -z $* ]] && return 0
+    export CFLAGS="${CFLAGS} $*"
+    export CXXFLAGS="${CXXFLAGS} $*"
+    return 0
+}
+
+append-cflags() {
+    illegal_in_global_scope
+
+    [[ -z $* ]] && return 0
+    export CFLAGS="${CFLAGS} $*"
+    return 0
+}
+
+append-cxxflags() {
+    illegal_in_global_scope
+
+    [[ -z $* ]] && return 0
+    export CXXFLAGS="${CXXFLAGS} $*"
+    return 0
+}
+
+replace-flags() {
+    illegal_in_global_scope
+
+    [[ $# != 2 ]] \
+        && echo && eerror "Usage: replace-flags <old flag> <new flag>" \
+        && die "replace-flags takes 2 arguments, not $#"
+
+    local f fset build=$(exhost --build)
+    declare -a new_CFLAGS new_CXXFLAGS
+
+    build=${build//-/_}
+
+    for fset in CFLAGS CPPFLAGS CXXFLAGS ${build}_CFLAGS ${build}_CPPFLAGS ${build}_CXXFLAGS; do
+        # Looping over the flags instead of using a global
+        # substitution ensures that we're working with flag atoms.
+        # Otherwise globs like -O* have the potential to wipe out the
+        # list of flags.
+        for f in ${!fset}; do
+            # Note this should work with globs like -O*
+            [[ ${f} == ${1} ]] && f=${2}
+            eval new_${fset}\[\${\#new_${fset}\[@]}]=\${f}
+        done
+        eval export ${fset}=\${new_${fset}\[*]}
+    done
+
+    return 0
+}
+
+strip-flags() {
+    illegal_in_global_scope
+
+    local x y flag NEW_CFLAGS NEW_CXXFLAGS
+
+    setup-allowed-flags
+
+    local NEW_CFLAGS=""
+    local NEW_CXXFLAGS=""
+
+    set -f  # disable pathname expansion
+
+    for x in ${CFLAGS}; do
+        for y in ${ALLOWED_FLAGS}; do
+            flag=${x%%=*}
+            if [ "${flag%%${y}}" = "" ] ; then
+                NEW_CFLAGS="${NEW_CFLAGS} ${x}"
+                break
+            fi
+        done
+    done
+
+    for x in ${CXXFLAGS}; do
+        for y in ${ALLOWED_FLAGS}; do
+            flag=${x%%=*}
+            if [ "${flag%%${y}}" = "" ] ; then
+                NEW_CXXFLAGS="${NEW_CXXFLAGS} ${x}"
+                break
+            fi
+        done
+    done
+
+    # In case we filtered out all optimization flags fallback to -O2
+    if [ "${CFLAGS/-O}" != "${CFLAGS}" -a "${NEW_CFLAGS/-O}" = "${NEW_CFLAGS}" ]; then
+        NEW_CFLAGS="${NEW_CFLAGS} -O2"
+    fi
+    if [ "${CXXFLAGS/-O}" != "${CXXFLAGS}" -a "${NEW_CXXFLAGS/-O}" = "${NEW_CXXFLAGS}" ]; then
+        NEW_CXXFLAGS="${NEW_CXXFLAGS} -O2"
+    fi
+
+    set +f  # re-enable pathname expansion
+
+    export CFLAGS="${NEW_CFLAGS}"
+    export CXXFLAGS="${NEW_CXXFLAGS}"
+    return 0
+}
+
+test-flag-PROG() {
+    illegal_in_global_scope
+
+    local comp=$1
+    local flags="$2"
+
+    [[ -z ${comp} || -z ${flags} ]] && \
+        return 1
+
+    local PROG="${!comp}"
+    ${PROG} ${flags} -S -o /dev/null -xc /dev/null \
+        > /dev/null 2>&1
+}
+
+# Returns true if C compiler support given flag
+test-flag-CC() { test-flag-PROG "CC" "$1"; }
+
+# Returns true if C++ compiler support given flag
+test-flag-CXX() { test-flag-PROG "CXX" "$1"; }
+
+test-flags-PROG() {
+    illegal_in_global_scope
+
+    local comp=$1
+    local flags
+    local x
+
+    shift
+
+    [[ -z ${comp} ]] && return 1
+
+    x=""
+    for x in "$@" ; do
+        test-flag-${comp} "${x}" && flags="${flags}${flags:+ }${x}"
+    done
+
+    echo "${flags}"
+
+    # Just bail if we dont have any flags
+    [[ -n ${flags} ]]
+}
+
+# Returns (echo's) the given flags supported by the C compiler
+test-flags-CC() { test-flags-PROG "CC" "$@"; }
+
+# Returns (echo's) the given flags supported by the C++ compiler
+test-flags-CXX() { test-flags-PROG "CXX" "$@"; }
+
+strip-unsupported-flags() {
+    illegal_in_global_scope
+
+    export CFLAGS=$(test-flags-CC ${CFLAGS})
+    export CXXFLAGS=$(test-flags-CXX ${CXXFLAGS})
+}
+
+get-flag() {
+    local f findflag="$1"
+
+    # this code looks a little flaky but seems to work for
+    # everything we want ...
+    # for example, if CFLAGS="-march=i686":
+    # `get-flag -march` == "-march=i686"
+    # `get-flag march` == "i686"
+    for f in ${CFLAGS} ${CXXFLAGS} ; do
+        if [ "${f/${findflag}}" != "${f}" ] ; then
+            printf "%s\n" "${f/-${findflag}=}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+append-ldflags() {
+    illegal_in_global_scope
+
+    [[ -z $* ]] && return 0
+    export LDFLAGS="${LDFLAGS} $*"
+    return 0
+}
+
+# Remove flags from LDFLAGS - it's up to the ebuild to filter
+# CFLAGS and CXXFLAGS via filter-flags if they need to.
+filter-ldflags() {
+    illegal_in_global_scope
+
+    _filter-var LDFLAGS "$@"
+    return 0
+}
+
+# Turn C style ldflags (-Wl,-foo) into straight ldflags - the results
+# are suitable for passing directly to 'ld'; note LDFLAGS is usually passed
+# to gcc where it needs the '-Wl,'.
+raw-ldflags() {
+    local x input="$@"
+    [[ -z ${input} ]] && input=${LDFLAGS}
+    set --
+    for x in ${input} ; do
+        x=${x#-Wl,}
+        set -- "$@" ${x//,/ }
+    done
+    echo "$@"
+}
+
+# Helper for cross variables, we really need something for this because
+# it takes a lot of lines to get this done thanks to bash's indirection
+# Example: print-flags $(exhost --build) CFLAGS LDFLAGS
+print-flags() {
+    [[ ${#} -lt 2 ]] && die "print-flags requires at least two arguments"
+
+    local prefix=${1//-/_} flag; shift
+    for flag in "${@}"; do
+        flag=${prefix}_${flag}
+        echo ${!flag}
+    done
+}
+
+# helpfull shorthand because it shows up a lot
+print-build-flags() {
+    print-flags "$(exhost --build)" "${@}"
+}
+

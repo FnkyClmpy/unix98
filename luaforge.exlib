@@ -1,0 +1,28 @@
+# Copyright 2009 Mike Kelly <pioto@exherbo.org>
+# Copyright 2012 Wouter van Kesteren <woutershep@gmail.com>
+# Distributed under the terms of the GNU General Public License v2
+
+# This exlib is useful for packages from luaforge. It'll set the basic
+# metadata properly to fetch them.
+
+HOMEPAGE="http://luaforge.net/projects/${PN}"
+
+DOWNLOADS="http://files.luaforge.net/releases/${PN}/${PN}/${PNV}/${PNV}.tar.gz"
+
+REMOTE_IDS="luaforge:${PN}"
+
+DEPENDENCIES="
+run:
+    dev-lang/lua
+"
+
+export_exlib_phases src_install
+
+luaforge_src_install() {
+    emake PREFIX="${IMAGE}/usr/$(exhost --target)" install
+    if pushd doc &>/dev/null; then
+        dodoc -r .
+        popd >/dev/null
+    fi
+}
+

@@ -1,0 +1,134 @@
+# Copyright 2009 David Leverton <dleverton@exherbo.org>
+# Distributed under the terms of the GNU General Public License v2
+
+if [[ -z ${SCM_TYPE} ]]; then
+    SCM_TYPE=hg
+    require scm
+fi
+
+scm-hg_do_dependencies() {
+    local hg='dev-scm/mercurial'
+    if [[ $(scm_get_var REPOSITORY) == ssh://* ]]; then
+        echo "${hg} net-misc/openssh"
+    else
+        echo "${hg}"
+    fi
+}
+
+scm-hg_trim_slashes() {
+    [[ ${#} -eq 1 ]] || die "scm-hg_trim_slashes needs exactly one argument"
+    if [[ ${1} == ssh://* ]]; then
+        local path=${1#ssh://*/}
+        local pathless=${1%"${path}"}
+        echo "${pathless}$(scm_trim_slashes -scheme -trailing "${path}")"
+    else
+        scm_trim_slashes -scheme -trailing "${1}"
+    fi
+}
+
+scm-hg_do_check_vars() {
+    [[ -n $(scm_get_var TAG) && -n $(scm_get_var REVISION) ]] \
+        && die "for hg, $(scm_var_name TAG) must not be set at the same time as $(scm_var_name REVISION)"
+    [[ -n $(scm_get_var BRANCH) && -n $(scm_get_var TAG) ]] \
+        && die "for hg, $(scm_var_name BRANCH) must not be set at the same time as $(scm_var_name TAG)"
+    [[ -n $(scm_get_var BRANCH) && -n $(scm_get_var REVISION) ]] \
+        && die "for hg, $(scm_var_name BRANCH) must not be set at the same time as $(scm_var_name REVISION)"
+    [[ -z $(scm_get_var BRANCH) && -z $(scm_get_var REVISION) &&
+            -z $(scm_get_var TAG) ]] && scm_set_var BRANCH default
+    [[ $(scm_get_var TAG) == tip ]] && die "for hg, $(scm_var_name TAG) must not be 'tip'"
+    local rev=$(scm_get_var REVISION)
+    [[ -n ${rev} ]] && [[ ${rev} == *[^0-9a-f]* || ${#rev} -ne 40 ]] \
+        && die "for hg, $(scm_var_name REVISION) must be a 40-character lowercase hexadecimal SHA-1 sum"
+    [[ -n $(scm_get_var SUBPATH) ]] && die "for hg, $(scm_var_name SUBPATH) must not be set"
+    [[ -n $(scm_get_var EXTERNAL_REFS) ]] && die "for hg, $(scm_var_name EXTERNAL_REFS) must not be set"
+
+    scm_modify_var REPOSITORY scm-hg_trim_slashes
+}
+
+scm-hg_hg() {
+    local echo=echo
+    if [[ ${1} == -q ]]; then
+        shift
+        echo=:
+    fi
+
+    local need_repository=yes global=( -y )
+    while [[ ${#} -gt 0 && ${1} == -* ]]; do
+        global+=( "${1}" )
+        [[ ${1} == -R* ]] && need_repository=
+        shift
+    done
+    [[ ${1} != clone && -n ${need_repository} ]] && global+=( -R"$(scm_get_var CHECKOUT_TO)" )
+
+    ${echo} hg "${global[@]}" "${@}" >&2
+    hg "${global[@]}" "${@}" || die_unless_nonfatal "hg ${1} failed"
+}
+
+scm-hg_do_appraise() {
+    local dir=$(scm_get_var CHECKOUT_TO)
+
+    if [[ ! -d ${dir}/.hg ]]; then
+        echo "${dir} is not a hg checkout"
+        return 3
+    fi
+
+    if [[ -n $(scm_get_var REVISION) ]]; then
+        if [[ -z $(nonfatal scm-hg_hg -q id -r$(scm_get_var REVISION) 2>/dev/null) ]]; then
+            echo "$(scm_get_var REVISION) is not present in ${dir}"
+            return 1
+        else
+            return 2
+        fi
+    fi
+
+    local origin=$(scm-hg_hg -q showconfig paths.default)
+    [[ -n ${origin} ]] || die "could not determine origin URL for ${dir}"
+    if [[ $(scm-hg_trim_slashes "${origin}") != $(scm_get_var REPOSITORY) ]]; then
+        echo "${dir} is a clone of ${origin}, but wanted $(scm_get_var REPOSITORY)"
+        return 3 # XXX
+    fi
+
+    if [[ -n $(scm_get_var TAG) ]]; then
+        if has "$(scm_get_var TAG)" $(scm-hg_hg -q tags | sed -e 's/[ \t].*//'); then
+            return 2
+        else
+            echo "${dir} does not contain the tag $(scm_get_var TAG)"
+            return 1
+        fi
+    fi
+
+    if [[ -n $(scm_get_var BRANCH) ]] && ! has "$(scm_get_var BRANCH)" $(scm-hg_hg -q branches | sed -e 's/[ \t].*//'); then
+        echo "${dir} does not contain the branch $(scm_get_var BRANCH)"
+        return 1
+    fi
+
+    return 0
+}
+
+scm-hg_do_checkout() {
+    scm-hg_hg clone --pull -U "$(scm_get_var REPOSITORY)" "$(scm_get_var CHECKOUT_TO)"
+}
+
+scm-hg_do_update() {
+    scm-hg_hg pull
+}
+
+scm-hg_revision_spec() {
+    if [[ -n $(scm_get_var REVISION) ]]; then
+        scm_get_var REVISION
+    elif [[ -n $(scm_get_var TAG) ]]; then
+        scm_get_var TAG
+    else
+        scm_get_var BRANCH
+    fi
+}
+
+scm-hg_do_revision() {
+    scm-hg_hg -q --debug identify -i -r$(scm-hg_revision_spec)
+}
+
+scm-hg_do_unpack() {
+    scm-hg_hg clone -U "$(scm_get_var CHECKOUT_TO)" "$(scm_get_var UNPACK_TO)"
+    scm-hg_hg -R"$(scm_get_var UNPACK_TO)" update -r$(scm-hg_revision_spec)
+}
+

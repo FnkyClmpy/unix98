@@ -1,0 +1,55 @@
+# Copyright 2019 Danilo Spinella <danyspin97@protonmail.com>
+# Distributed under the terms of the GNU General Public License v2
+# Based in part upon "openrc-service.exlib", which is:
+#   Copyright 2016 Julian Ospald <hasufell@posteo.de>
+# Based in part upon "s6-rc-service.exlib", which is:
+#   Copyright 2018 Bjorn Pagen <bjornpagen@gmail.com>
+
+# Purpose: an exlib dealing with 66 service directories
+# Maintainer: Danilo Spinella <danyspin97@protonmail.com>
+# Exported phases: none
+# Side-effects: - sets MYOPTIONS
+#               - sets and exports _66SOURCESDIR
+#
+# Usage
+#   exparams: - files: directory containing service definition directories
+#                   directories from ( default: "${FILES}"/66 )
+#             - do_parts: whether to install files as parts (default: true)
+#
+# Example:
+# - add 66 service definition directories to "${FILES}"/66
+# - add exlib: require 66-service
+# - call 'install_66_files' at the end of src_install
+
+myexparam files="${FILES}"/66
+exparam -v files files
+
+export _66_SERVICES_DIR="/usr/share/66/service"
+
+MYOPTIONS="66 [[ description = [ Adds service definitions for sys-apps/66 ] ]]"
+
+# Installs all directories found in files to 66_SERVICES_DIR
+#
+# Takes no arguments.
+install_66_files() {
+
+    if ! option 66 ; then
+        return
+    fi
+
+    [[ -z "${files}" ]] || 66_recursive_doins "${files}"
+}
+
+# Installs all contents of given directory.
+# Usage: 66_recursive_doins [directory]
+66_recursive_doins() {
+    insinto "${_66_SERVICES_DIR}"
+
+    # install files
+    pushd ${1}
+    for service in *; do
+        doins -r "${service}"
+    done
+    popd
+}
+

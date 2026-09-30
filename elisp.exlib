@@ -1,0 +1,74 @@
+# Copyright 2009 Elias Pipping <elias@pipping.org>
+# Distributed under the terms of the GNU General Public License v2
+#
+# This is a wrapper around elisp-module.exlib that automates
+# compilation and installation even further.
+
+myexparam pn=${PN}
+exparam -v ELISP_PN pn
+require elisp-module [ pn=${ELISP_PN} ]
+
+export_exlib_phases src_compile src_install pkg_postinst pkg_postrm
+
+myexparam -b generate_autoloads=false
+myexparam -b install_stub=false
+
+# Set these for packages that have optional emacs support.
+# Then the phases from this exlib will only run when the "emacs" option is enabled.
+myexparam -b with_opt=false
+myexparam source_directory=
+
+exparam -v ELISP_SOURCE_DIRECTORY source_directory
+
+if exparam -b with_opt; then
+    MYOPTIONS="emacs"
+
+    DEPENDENCIES="
+        build+run:
+            emacs? ( app-editors/emacs )
+    "
+else
+    DEPENDENCIES="
+        build+run:
+            app-editors/emacs
+    "
+fi
+
+elisp_src_compile() {
+    if ! exparam -b with_opt || option emacs; then
+        edo pushd "${WORK}/${ELISP_SOURCE_DIRECTORY}"
+        elisp-compile *.el
+        edo popd
+    fi
+}
+
+elisp_src_install() {
+    if ! exparam -b with_opt || option emacs; then
+        edo pushd "${WORK}/${ELISP_SOURCE_DIRECTORY}"
+        elisp-install ${ELISP_PN} *.el *.elc
+
+        if exparam -b generate_autoloads; then
+            elisp-generate-autoloads ${ELISP_PN}-autoloads.el
+            elisp-install ${ELISP_PN} ${ELISP_PN}-autoloads.el
+        fi
+        if exparam -b install_stub; then
+            elisp-install-stub
+        else
+            elisp-install-site-file
+        fi
+        edo popd
+    fi
+}
+
+elisp_pkg_postinst() {
+    if ! exparam -b with_opt || option emacs; then
+        elisp-module_pkg_postinst
+    fi
+}
+
+elisp_pkg_postrm() {
+    if ! exparam -b with_opt || option emacs; then
+        elisp-module_pkg_postrm
+    fi
+}
+

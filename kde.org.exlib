@@ -1,0 +1,46 @@
+# Copyright 2017 Heiko Becker <heirecka@exherbo.org>
+# Distributed under the GNU General Public License
+
+# Exlib to fetch projects hosted on kde.org.
+#
+# It just sets basic values, like HOMEPAGE and DOWNLOADS. If you want common
+# cmake options and other stuff, additionally require kde.exlib. For KDE
+# Frameworks, Plasma and Applications please use the corresponding exlib,
+# e.g. plasma.exlib.
+
+# Name of the package
+myexparam pn=${MY_PN:-${PN}}
+# Version of the package
+myexparam pv=${MY_PV:-${PV}}
+# Name and version of the package
+myexparam pnv=${MY_PNV:-$(exparam pn)-$(exparam pv)}
+# Path to the tarball, i.e. the part between stable/ and /pnv.suffix
+myexparam subdir="$(exparam pn)/$(exparam pv)"
+# Suffix of the package's archive
+myexparam suffix=tar.xz
+# Group or user in gitlab. Existing projects were imported in the 'kde' group
+# with the gitlab migration, before moving them to their target group,
+# resulting in a redirect. Ignored if no scm version
+myexparam group_or_user=kde
+# Branch to fetch from, ignored if no scm version
+myexparam branch=master
+# Set to true to fetch pre-release versions from mirror://kde/unstable/...
+myexparam -b unstable=false
+
+HOMEPAGE="https://www.kde.org/"
+
+if ever is_scm ; then
+    DOWNLOADS=""
+    exparam -v SCM_BRANCH branch
+    SCM_REPOSITORY="https://invent.kde.org/$(exparam group_or_user)/$(exparam pn).git"
+    require scm-git
+else
+    if exparam -b unstable; then
+        DOWNLOADS="mirror://kde/unstable/$(exparam subdir)/$(exparam pnv).$(exparam suffix)"
+    else
+        DOWNLOADS="mirror://kde/stable/$(exparam subdir)/$(exparam pnv).$(exparam suffix)"
+    fi
+fi
+
+ever is_scm || CMAKE_SOURCE=${WORKBASE}/$(exparam pnv)
+

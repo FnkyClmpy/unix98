@@ -1,0 +1,161 @@
+# Copyright 2008, 2009, 2010 Ingmar Vanhassel <ingmar@exherbo.org>
+# Distributed under the terms of the GNU General Public License v2
+#
+# Based in part upon 'perl-module.eclass' which is
+#   Copyright 1999-2007 Gentoo Foundation
+#
+#   Original Authors:
+#       Seemant Kulleen <seemant@gentoo.org>
+#       Robin Johnson <robbat2@gentoo.org>
+#       Michael Cummings <mcummings@gentoo.org>
+
+# Set the buildsystem parameter to either "makemaker" to use ExtUtils::MakeMaker or "module-build"
+# to use Module::Build. Empty or any other value will try Makefile.PL first and Build.PL if that
+# does not exist.
+
+export_exlib_phases src_configure src_compile src_test src_install
+
+myexparam module_author=
+myexparam module_extension=.tar.gz
+myexparam subdir=
+myexparam buildsystem=
+
+# TODO(moben) make cross compiling perl modules actually work
+# IDEA(moben) symlink Config{.pm,_heavy.pl} to a separate directory and add that to PERL5LIB
+#             that should allow it to pick up the right directories and compiler{s,flags} to build
+#             stuff for the target arch.
+#             the line below fails because the host perl can't use the arch specific libs in there
+#export PERL5LIB=${ROOT}/usr/$(exhost --target)/lib/perl5/core_perl/5.18-arch/
+
+perl-module-metadata() {
+    local module_author module_extension subdir
+
+    exparam -v module_author module_author
+    exparam -v module_extension module_extension
+    exparam -v subdir subdir
+    [[ -n ${subdir} && ${subdir: -1} != / ]] && subdir+=/
+
+    if [[ -z ${HOMEPAGE} && -z ${DOWNLOADS} && -n ${module_author} ]]; then
+        HOMEPAGE="https://metacpan.org/release/${MY_PN:-${PN}}/"
+        DOWNLOADS="mirror://cpan/authors/id/${module_author:0:1}/${module_author:0:2}/${module_author}/${subdir}${MY_PNV:-${PNV}}${module_extension}"
+        REMOTE_IDS="cpan:${MY_PN:-${PN}}"
+        UPSTREAM_CHANGELOG="https://metacpan.org/changes/distribution/${MY_PN:-${PN}}"
+    fi
+}
+perl-module-metadata
+
+# Default license, for packages licensed under perl's terms.
+LICENCES="${LICENCES:-|| ( Artistic GPL-1 GPL-2 GPL-3 )}"
+
+DEPENDENCIES="build+run: dev-lang/perl:="
+
+perl-module_src_configure() {
+    local buildsystem
+    exparam -v buildsystem buildsystem
+
+    perlinfo
+
+    case ${buildsystem} in
+        makemaker )
+            build_makemaker ;;
+        module-build )
+            build_module-build ;;
+        *)
+            if [[ -f Makefile.PL ]]; then
+                build_makemaker
+            elif [[ -f Build.PL ]]; then
+                build_module-build
+            fi ;;
+    esac
+}
+
+perl-module_src_compile() {
+    if [[ -f Makefile ]]; then
+        default
+    elif [[ -f Build ]]; then
+        edo perl Build build
+    fi
+}
+
+perl-module_src_test() {
+    if [[ -f Makefile ]]; then
+        default
+    elif [[ -f Build ]]; then
+        edo perl Build test
+    fi
+}
+
+perl-module_src_install() {
+    if [[ -f Makefile ]]; then
+        default
+    elif [[ -f Build ]]; then
+        edo perl "${WORK}/Build" install
+        emagicdocs
+    fi
+
+    if [[ -d ${IMAGE}/usr/share/man ]] ; then
+        edo find "${IMAGE}"/usr/share/man -type f -name "*.3pm*" -delete
+        edo find "${IMAGE}"/usr/share/man -depth -type d -empty -delete
+    fi
+
+    fixlocalpod
+
+    local encoding file
+    edo find "${IMAGE}" -type f -not -name '*.so*' | while read file
+    do
+        encoding=$(file -b --mime-encoding "${file}");
+        if [[ ${encoding} != binary ]]; then
+            edo sed -i -e "s:${IMAGE}:/:g" "${file}"
+        fi
+    done
+
+    if [[ -d "${IMAGE}/usr/$(exhost --target)/lib" ]] ; then
+        edo find "${IMAGE}/usr/$(exhost --target)/lib" -type f -name .packlist -delete
+        edo find "${IMAGE}/usr/$(exhost --target)/lib" -depth -type d -empty -delete
+    fi
+}
+
+perlinfo() {
+    illegal_in_global_scope
+
+    local v version installsitearch installsitelib installarchlib installvendorlib installvendorarch
+    for v in version installsitearch installsitelib installarchlib \
+        installvendorlib installvendorarch; do
+        eval "$(perl -V:${v})"
+    done
+
+    PERL_VERSION=${version}
+    SITE_ARCH=${installsitearch}
+    SITE_LIB=${installsitelib}
+    ARCH_LIB=${installarchlib}
+    VENDOR_LIB=${installvendorlib}
+    VENDOR_ARCH=${installvendorarch}
+}
+
+build_module-build() {
+    illegal_in_global_scope
+
+    edo perl Build.PL --installdirs=vendor --destdir="${IMAGE}" \
+        --install_path installvendorhtml1dir=/usr/share/doc/${PNVR}/html --installpath installvendorhtml3dir=/usr/share/doc/${PNVR}/html \
+        "${PERL_MODULE_SRC_CONFIGURE_PARAMS[@]}"
+}
+
+build_makemaker() {
+    illegal_in_global_scope
+
+    export PERL_MM_USE_DEFAULT="1"
+
+    edo perl Makefile.PL \
+        INSTALLDIRS=vendor DESTDIR="${IMAGE}" \
+        INSTALLVENDORHTML1DIR=/usr/share/doc/${PNVR}/html INSTALLVENDORHTML3DIR=/usr/share/doc/${PNVR}/html \
+        "${PERL_MODULE_SRC_CONFIGURE_PARAMS[@]}"
+}
+
+fixlocalpod() {
+    illegal_in_global_scope
+
+    edo find "${IMAGE}" -type f -name perllocal.pod -delete
+
+    [[ -d "${IMAGE}/usr/$(exhost --target)/lib" ]] && edo find "${IMAGE}/usr/$(exhost --target)/lib" -type d -empty -delete
+}
+

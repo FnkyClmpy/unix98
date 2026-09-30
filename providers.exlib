@@ -1,0 +1,40 @@
+# Copyright 2015 Kylie McClain <somasis@exherbo.org>
+# Distributed under the terms of the GNU General Public License v2
+
+# providers.exlib - wrapper around `eclectic script` to allow for
+# easier setting of providers needed by an exheres
+
+# require providers [ providers=[ 'alternative provider' ] ]
+#
+# providers=( 'alternative provider' )
+#
+# src_<phase>() {
+#     providers_set
+# }
+#
+
+myexparam providers=[ ]
+
+ALTERNATIVES_DIR="/etc/env.d/alternatives"
+
+DEPENDENCIES="
+    build:
+        app-admin/eclectic[>=2.0.13]
+"
+
+# providers_set ["<alternative> <provider>" ...]
+providers_set() {
+    local exparam_providers provider provided provided alternative
+    exparam -v exparam_providers providers[@]
+    if [[ -z "${providers}" && -z "${exparam_providers[@]}" && -z "${@}" ]];then
+        die "providers_set has no providers to set!"
+    fi
+    for provider in "${@}" "${exparam_providers[@]}" "${providers[@]}";do
+        provided=${provider% *}
+        alternative=${provider#* }
+        [[ -d "${ROOT}${ALTERNATIVES_DIR}"/${provided}/${alternative} ]] || \
+            die "Alternative \"${alternative}\" for \"${provided}\" doesn't exist."
+        edo eval "$(eclectic "${provided}" script --sh "${alternative}")"
+    done
+}
+

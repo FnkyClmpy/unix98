@@ -1,0 +1,66 @@
+# Copyright 2018 Bjorn Pagen <bjornpagen@gmail.com>
+# Distributed under the terms of the GNU General Public License v2
+# Based in part upon "openrc-service.exlib", which is:
+#   Copyright 2016 Julian Ospald <hasufell@posteo.de>
+
+# Purpose: an exlib dealing with s6-rc service directories
+# Maintainer: Bjorn Pagen <bjornpagen@gmail.com>
+# Exported phases: none
+# Side-effects: - sets MYOPTIONS depending on 'do_parts' exparam
+#               - sets and exports S6RCSOURCESDIR
+#
+# Usage
+#   exparams: - s6rc_files: directory containing service definition directories
+#                   directories from ( default: "${FILES}"/s6-rc )
+#             - do_parts: whether to install files as parts (default: true)
+#
+# Example:
+# - add s6-rc service definition directories to "${FILES}"/s6-rc
+# - add exlib: require s6-rc-service
+# - call 'install_s6-rc_files' at the end of src_install
+
+myexparam s6rc_files="${FILES}"/s6-rc
+myexparam -b do_parts=true
+
+export S6RCSOURCESDIR="/etc/s6-rc/sources"
+
+exparam -v s6rc_files s6rc_files
+
+# add parts option
+if exparam -b do_parts; then
+    MYOPTIONS="parts: s6-rc [[ description = [ Adds service definitions for sys-apps/s6 ] ]]"
+fi
+
+# Installs all directories found in s6rc_files to S6RCSOURCESDIR
+# 
+# Takes no arguments.
+install_s6-rc_files() {
+
+    if exparam -b do_parts && ! option parts:s6-rc; then
+        return
+    fi
+
+    [[ -z "${s6rc_files}" ]] || s6-rc_recursive_doins "${s6rc_files}"
+}
+
+# Installs all contents of given directory.
+#
+# Only exparts contents if [ do_parts=true ].
+#
+# Usage: s6-rc_recursive_doins [directory]
+s6-rc_recursive_doins() {
+    local thing
+
+    insinto "${S6RCSOURCESDIR}"
+
+    # install files and expart them
+    pushd ${1}
+    for thing in *; do
+        doins -r "${thing}"
+        if exparam -b do_parts; then
+            expart s6-rc "${S6RCSOURCESDIR}/${thing}"
+        fi
+    done
+    popd
+}
+

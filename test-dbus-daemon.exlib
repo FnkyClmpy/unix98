@@ -1,0 +1,47 @@
+# Copyright 2012 Paul Seidler <sepek@exherbo.org>
+# Distributed under the terms of the GNU General Public License v2
+
+if [[ -n ${EASY_MULTIBUILD_CLASSES} ]]; then
+    test_one_multibuild() {
+        test-dbus-daemon_run-tests
+    }
+else
+    export_exlib_phases src_test
+
+    test-dbus-daemon_src_test() {
+        test-dbus-daemon_run-tests
+    }
+fi
+
+test-dbus-daemon_start() {
+    esandbox allow_net 'unix:/tmp/dbus-*'
+
+    echo "Initiating DBus session bus..."
+    eval "$(dbus-launch --sh-syntax)"
+    [[ -z ${DBUS_SESSION_BUS_PID} ]] && die "Launching DBus session bus failed"
+}
+
+test-dbus-daemon_stop() {
+    esandbox disallow_net 'unix:/tmp/dbus-*'
+
+    echo "Terminating DBus session bus..."
+    edo kill -TERM ${DBUS_SESSION_BUS_PID}
+}
+
+test-dbus-daemon_run-tests() {
+    local ret=0
+
+    local DBUS_SESSION_BUS_PID
+    local DBUS_SESSION_BUS_ADDRESS
+
+    test-dbus-daemon_start
+    nonfatal "${@:-default}"
+    ret=${?}
+    test-dbus-daemon_stop
+
+    unset DBUS_SESSION_BUS_PID
+    unset DBUS_SESSION_BUS_ADDRESS
+
+    [[ ${ret} == 0 ]] || die_unless_nonfatal "emake returned error $ret"
+}
+

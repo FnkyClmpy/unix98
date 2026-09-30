@@ -1,0 +1,377 @@
+# Copyright 2009 Ingmar Vanhassel
+# Copyright 2013 Jorge Aparicio
+# Copyright 2015 Pierre Lejeune
+# Distributed under the terms of the GNU General Public License v2
+
+# Based in part upon 'python.eclass' v1.32 from Gentoo, which is:
+#   Copyright 1999-2004 Gentoo Foundation
+
+# exparams:
+#   has_lib ( format: true or false ) ( defaults to true )
+#     whether the package installs a library into site-packages
+#
+#     Adds python_abis suboptions, and "build+run" dependencies on specific
+#     python slot(s). Use the multibuild option to control whether to allow
+#     a single python slot or multiple slots. PYTHON is set to the exe for the
+#     selected python slot.
+#
+#   has_test ( format: true or false ) ( defaults to false )
+#     whether the package uses python in its src_test phase only
+#
+#     Has no effect unless has_lib is false
+#
+#     Adds python_abis suboptions, and "test" dependencies on specific python
+#     slots. The multibuild option is ignored, only a single python slot is
+#     provided. PYTHON is set to the exe for the selected python slot.
+#
+#   has_bin ( format: true or false ) ( defaults to false )
+#     Not recommended for new packages. There is no guarantee of what PYTHON
+#     version you get (could be any slot, 2.7 or 3.x!), and dependencies on
+#     other packages that provide python libraries don't work.
+#
+#     Use [ has_lib=true multibuild=false ] instead for packages that install
+#     python executables but not libraries.
+#
+#     Has no effect unless has_lib and has_test are both false.
+#
+#     Does not add python_abis suboptions. A build+run "any slot" dependency on
+#     python is added with no version restrictions. PYTHON is set to the
+#     unsuffixed python exe (which version you get depends on eclectic config).
+#
+#   blacklist ( format: none or "a x.y" ) ( empty by default )
+#     python abis that don't work with this package
+#
+#     none: whitelist all abis
+#
+#     a: blocks a.{0,1,2,...}
+#
+#     x.y: blocks x.y
+#
+#   min_versions ( format: "a.b.c x.y.z" ) ( empty by default )
+#     minimal working version for each python abi
+#
+#   python_opts ( format: "[foo][bar]" ) ( empty by default )
+#     options that need to be enabled in dev-lang/python
+#
+#   multibuild ( format: true or false ) ( defaults to true )
+#     whether the package can be built for several python abis
+#     NOTE: At the moment, a package can only use one multibuild "class".
+#           For example, it can be built for multiple python abis or multiple C abis,
+#           but not both at the same time. If you want to build for 32 and 64 bit,
+#           you have to set multibuild=false here.
+#           Also, all of your python dependencies will have to be multibuild=false
+#           because they need to be installed to the libdir with the right bitness.
+#
+#   multiunpack, work
+#     see easy-multibuild.exlib
+#
+#   with_opt ( format: true or false ) ( defaults to false )
+#     whether an option needs to be enabled to build python bindings
+#
+#   option_name ( format: foo ) ( defaults to python )
+#     the name of the option that needs to be enabled to build python bindings
+#
+#   2to3 (format: true or false) ( defaults to false )
+#     whether to use 2to3 prior to build
+#     needs either multibuild=false or multibuild=true && multiunpack=true
+#     The following arrays can be defined:
+#       PYTHON_2TO3_FIXES: array of fixes to apply. Can be empty.
+#       PYTHON_2TO3_NOFIXES: array of fixes to NOT apply. Can be empty.
+#       PYTHON_2TO3_PARAMS: array of files and directories to transform. Defaults to . if empty.
+
+# example: (assuming PYTHON_AVAILABLE_ABIS="2.7 3.1 3.2 3.4")
+#
+#   require python [ python_opts="[readline]" min_versions="3.1.1" \
+#                    blacklist="2 3.4" with_opt=true ]
+#
+# generates:
+#   OPTIONS="
+#       python? ( ( python_abis: 3.1 3.2 ) [
+#           number-selected = at-least-one
+#       ] )
+#   "
+#
+#   DEPENDENCIES="
+#       build+run: (
+#          python? (
+#              python_abis:3.1? ( dev-lang/python:3.1[>=3.1.1][readline] )
+#              python_abis:3.2? ( dev-lang/python:3.2[readline] )
+#          )
+#       )
+#   "
+
+myexparam -b has_lib=true
+myexparam -b has_bin=false
+myexparam -b has_test=false
+myexparam -b 2to3=false
+
+myexparam blacklist=
+
+myexparam -b multibuild=true
+myexparam -b with_opt=false
+
+if exparam -b with_opt; then
+    myexparam option_name=python
+    exparam -v PYTHON_OPTION_NAME option_name
+
+    MYOPTIONS="${PYTHON_OPTION_NAME}"
+fi
+
+myexparam python_opts=
+myexparam min_versions=
+
+exparam -v PYTHON_OPTS python_opts
+exparam -v PYTHON_BLACKLIST blacklist
+exparam -v PYTHON_MIN_VERSIONS min_versions
+
+# PYTHON_AVAILABLE_ABIS below need to be in sync with
+# MULTIBUILD_PYTHON_ABIS_TARGETS in profiles/make.defaults.
+PYTHON_AVAILABLE_ABIS="2.7 3.9 3.10 3.11 3.12 3.13 3.14"
+
+if [[ ${PYTHON_BLACKLIST} == none ]]; then
+    PYTHON_FILTERED_ABIS="${PYTHON_AVAILABLE_ABIS}"
+else
+    PYTHON_FILTERED_ABIS=
+
+    for abi in ${PYTHON_AVAILABLE_ABIS}; do
+        if has $(ever major ${abi}) ${PYTHON_BLACKLIST}; then
+            continue
+        elif has ${abi} ${PYTHON_BLACKLIST}; then
+            continue
+        fi
+
+        PYTHON_FILTERED_ABIS+="${abi} "
+    done
+
+    if [[ -z ${PYTHON_FILTERED_ABIS} ]]; then
+        die "all available python abis have been blacklisted"
+    fi
+fi
+
+if exparam -b has_lib; then
+    # NOTE: currently it's only possible to use classes C or PYTHON_ABIS
+    if exparam -b multibuild; then
+        myexparam -b multiunpack=false
+        exparam -b multiunpack && myexparam work=${PNV} && exparam -v PYTHON_WORK work
+
+        exparam -v PYTHON_MULTIUNPACK multiunpack
+
+        exparam -b 2to3 && ! exparam -b multiunpack && \
+            die "exparam 2to3 can't be used with multibuild=true && multiunpack=false"
+
+        require easy-multibuild [ classes=[ PYTHON_ABIS ] with_option=${PYTHON_OPTION_NAME} \
+                                  multiunpack=${PYTHON_MULTIUNPACK} $(exparam -b multiunpack && echo "work=${PYTHON_WORK}") ]
+
+        MULTIBUILD_PYTHON_ABIS_TARGETS="${PYTHON_FILTERED_ABIS}"
+    fi
+
+    MYOPTIONS+=' ('
+    exparam -b with_opt && MYOPTIONS+=" ${PYTHON_OPTION_NAME}?"
+    # define python subotions with description, requires and number_select
+    MYOPTIONS+=" ( python_abis: ( ${PYTHON_FILTERED_ABIS} ) [["
+    # set the maximum of enabled python_abis:*
+    exparam -b multibuild && MYOPTIONS+=' number-selected = at-least-one' || MYOPTIONS+=' number-selected = exactly-one'
+    MYOPTIONS+=' ]] ) )'
+
+    DEPENDENCIES+="build+run: ( "
+    exparam -b with_opt && DEPENDENCIES+="${PYTHON_OPTION_NAME}? "
+    DEPENDENCIES+="( "
+    for abi in ${PYTHON_FILTERED_ABIS};  do
+        DEPENDENCIES+="python_abis:${abi}? ( dev-lang/python:${abi}"
+        for min_version in ${PYTHON_MIN_VERSIONS}; do
+            if [[ $(ever range 1-2 ${min_version}) == ${abi} ]]; then
+                DEPENDENCIES+="[>=${min_version}]"
+                break
+            fi
+        done
+        DEPENDENCIES+="${PYTHON_OPTS} ) "
+    done
+    DEPENDENCIES+=") )"
+
+    if ! exparam -b multibuild; then
+        # set python version which we will build against.
+        # In the multibuild case it gets set per subphase by easy-multibuild.
+        # Maybe we should always use multibuild?
+        # Downside: people have to use *_one_multibuild, even though they said multibuild=false
+        # Upside: only one codepath
+        export PYTHON="/usr/$(exhost --build)/bin/python${PYTHON_ABIS}"
+    fi
+
+    python_prepare_one_multibuild() {
+        default
+
+        if [[ -z ${PYTHON_OPTION_NAME} ]] || option ${PYTHON_OPTION_NAME}; then
+            exparam -b 2to3 && python_run_2to3
+        fi
+    }
+
+    if exparam -b 2to3; then
+        prepare_one_multibuild() {
+            python_prepare_one_multibuild
+        }
+
+        if ! exparam -b multibuild; then
+            export_exlib_phases src_prepare
+
+            python_src_prepare() {
+                python_prepare_one_multibuild
+            }
+        fi
+    fi
+elif exparam -b has_test; then
+    MYOPTIONS+=' ('
+    exparam -b with_opt && MYOPTIONS+=" ${PYTHON_OPTION_NAME}?"
+    MYOPTIONS+=" ( python_abis: ( ${PYTHON_FILTERED_ABIS} ) [[ number-selected = exactly-one ]] ) )"
+
+    DEPENDENCIES+="test: ( "
+    exparam -b with_opt && DEPENDENCIES+="${PYTHON_OPTION_NAME}? "
+    DEPENDENCIES+="( "
+    for abi in ${PYTHON_FILTERED_ABIS};  do
+        DEPENDENCIES+="python_abis:${abi}? ( dev-lang/python:${abi}"
+        for min_version in ${PYTHON_MIN_VERSIONS}; do
+            if [[ $(ever range 1-2 ${min_version}) == ${abi} ]]; then
+                DEPENDENCIES+="[>=${min_version}]"
+                break
+            fi
+        done
+        DEPENDENCIES+="${PYTHON_OPTS} ) "
+    done
+    DEPENDENCIES+=") )"
+
+    export PYTHON="/usr/$(exhost --build)/bin/python${PYTHON_ABIS}"
+else
+    # TODO decide what to do with this part
+    if exparam -b has_bin; then
+        DEPENDENCIES+="
+            build+run:
+                ( $(exparam -b with_opt && echo "${PYTHON_OPTION_NAME}?") ( dev-lang/python:*${PYTHON_OPTS} ) )
+        "
+    fi
+
+    export PYTHON="/usr/$(exhost --build)/bin/python"
+fi
+
+# Tells python not to automatically recompile modules to .pyc/.pyo even if the timestamps/version
+# stamps don't match. this is done to protect sandbox.
+#
+# NOTE: Supported by dev-lang/python[>=2.6] only.
+python_disable_pyc() {
+    illegal_in_global_scope
+
+    export PYTHONDONTWRITEBYTECODE=1
+}
+
+python_enable_pyc() {
+    illegal_in_global_scope
+
+    unset PYTHONDONTWRITEBYTECODE
+}
+
+# Returns the current python abi
+# NOTE(moben): Doesn't return the actual abi with flags, only the version, but that is what
+# we need most of the time. See python_get_incdir()
+python_get_abi() {
+    illegal_in_global_scope
+
+    if exparam -b multibuild; then
+        echo -n "${MULTIBUILD_PYTHON_ABIS_CURRENT_TARGET}"
+    else
+        echo -n "${PYTHON_ABIS}"
+    fi
+}
+
+# Run without arguments, returns the python include directory.
+python_get_incdir() {
+    illegal_in_global_scope
+
+    echo -n "/usr/$(exhost --target)/include/python$(python_get_abi)"
+}
+
+# Run without arguments, returns the python library directory.
+python_get_libdir() {
+    illegal_in_global_scope
+
+    echo -n "/usr/$(exhost --target)/lib/python$(python_get_abi)"
+}
+
+# Run without arguments, returns the python site-packages directory.
+python_get_sitedir() {
+    illegal_in_global_scope
+
+    echo -n "$(python_get_libdir)/site-packages"
+}
+
+# Byte-compiles all .py files in ${IMAGE}$(python_get_libdir). Changing the mtime of a .py file
+# invalidates the byte-compiled versions. python_bytecompile() should thus be run at the end of
+# src_install(). Both .pyc & .pyo (optimized & byte-compiled) files are generated.
+# Optionally takes directory arguments, specifying where to look for compilable files.
+python_bytecompile() {
+    illegal_in_global_scope
+
+    [[ ${EXHERES_PHASE} != install ]] && die "${FUNCNAME} should only be run in src_install()"
+
+    local optimize_dirs
+    if [[ -n ${@} ]] ; then
+        optimize_dirs=( "$@" )
+    else
+        optimize_dirs=( "$(python_get_libdir)" )
+    fi
+
+    local excludes=()
+    [[ -n "${PYTHON_BYTECOMPILE_EXCLUDES[@]}" ]] &&
+        excludes=( -x "$(IFS='|' ; echo "${PYTHON_BYTECOMPILE_EXCLUDES[*]}")" )
+
+    for dir in ${optimize_dirs[@]} ; do
+        dir=${IMAGE}${dir#${IMAGE}}
+
+        edo find "${dir}" -type f -name '*.py' -exec touch {} +
+
+        edo python$(python_get_abi)    -mcompileall -f -q -d $(python_get_libdir) "${excludes[@]}" "${dir}"
+        edo python$(python_get_abi) -O -mcompileall -f -q -d $(python_get_libdir) "${excludes[@]}" "${dir}"
+    done
+}
+
+if exparam -b 2to3; then
+    # Runs 2to3 to make source code compatible with Python-3.
+    e2to3() {
+        illegal_in_global_scope
+
+        [[ ${EXHERES_PHASE} != prepare ]] && die "${FUNCNAME} should only be run in src_prepare()"
+
+        local python_abi=$(python_get_abi) fixes=() nofixes=()
+
+        [[ $(ever major ${python_abi}) != 3 ]] && die "${FUNCNAME} is for usage with python-3 only"
+
+        [[ -n ${PYTHON_2TO3_PARAMS[@]} ]] || PYTHON_2TO3_PARAMS=( . )
+
+        for fix in "${PYTHON_2TO3_FIXES[@]}"; do
+            fixes+=( "--fix=${fix}" )
+        done
+
+        for nofix in "${PYTHON_2TO3_NOFIXES[@]}"; do
+            nofixes+=( "--nofix=${nofix}" )
+        done
+
+        edo 2to3-${python_abi} -j${EXJOBS:-1} -wn --no-diffs "${fixes[@]}" "${nofixes[@]}" "${PYTHON_2TO3_PARAMS[@]}"
+    }
+
+    python_run_2to3() {
+        illegal_in_global_scope
+
+        local python_abi=$(python_get_abi)
+
+        [[ $(ever major ${python_abi}) == 3 ]] && e2to3
+    }
+fi
+
+numpy_slot() {
+    case ${1} in
+        3.6)
+            echo "3.6"
+            ;;
+        *)
+            echo "0"
+            ;;
+    esac
+}
+

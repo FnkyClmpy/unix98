@@ -1,0 +1,135 @@
+# Copyright 2010 Anders Ladegaard Marchsteiner <alm.anma@gmail.com>
+# Copyright 2015 Marc-Antoine Perennou <keruspe@exherbo.org>
+# Distributed under the terms of the GNU General Public License v2
+# Based in part upon 'php-pear.exlib', which is:
+#     Copyright 2009 Wulf C. Krueger <philantrop@exherbo.org>
+
+# Specify whether the module is a "zend" module or a standard "module"
+myexparam module=extension
+
+# If the package doesn't support all php slots, you have to list
+# all supported slots yourself
+myexparam php_abis=[ 5.6 7.0 7.1 7.2 7.3 7.4 8.0 8.1 8.2 8.3 8.4 8.5 ]
+
+# Provide a way to customize the PN used by easy-multibuild for $WORK
+myexparam pn=${PN}
+
+# Provide a way to customize the PN used by easy-multibuild for $WORK
+myexparam soname=${PN}
+
+# Provide a way to customize WORK (will be passed to easy-multibuild)
+myexparam work=""
+
+exparam -v PHP_MODULE_TYPE module
+exparam -v PHP_ABIS php_abis[@]
+exparam -v MY_PN pn
+exparam -v MY_SONAME soname
+exparam -v MY_WORK work
+
+fix_PECL_PV() {
+    tmp="${PV}"
+    tmp="${tmp/_/}"
+    tmp="${tmp/rc/RC}"
+    tmp="${tmp/beta/b}"
+    tmp="${tmp/alpha/a}"
+    PECL_PV="${tmp}"
+}
+
+# Unless it's set in the exheres, use the above function to get PECL_PV for DOWNLOADS.
+[[ -z ${PECL_PV} ]] && fix_PECL_PV
+
+# Set DOWNLOADS and HOMEPAGE
+[[ -z ${DOWNLOADS} ]] && DOWNLOADS="http://pecl.php.net/get/${PN}-${PECL_PV}.tgz"
+[[ -z ${HOMEPAGE} ]] && HOMEPAGE="http://pecl.php.net/package/${PN}"
+
+UPSTREAM_CHANGELOG="http://pecl.php.net/package-changelog.php?package=${PN}&release=${PECL_PV}"
+
+[[ -z ${MY_WORK} ]] && MY_WORK="${MY_PN}-${PECL_PV}"
+
+MULTIBUILD_PHP_ABIS_TARGETS="${PHP_ABIS[@]}"
+
+require easy-multibuild [ classes=[ PHP_ABIS ] multiunpack=true work=${MY_WORK} ]
+
+php_myoptions() {
+    local abi
+    echo -n "( php_abis: "
+    for abi in "${PHP_ABIS[@]}"; do
+        echo -n "${abi} "
+    done
+    echo -n ") [[ number-selected = at-least-one ]]"
+}
+
+php_dependencies() {
+    local abi
+    echo "("
+    for abi in "${PHP_ABIS[@]}"; do
+        echo "php_abis:${abi}? ( dev-lang/php:${abi}[pear] )"
+    done
+    echo ")"
+}
+
+MYOPTIONS="$(php_myoptions)"
+
+DEPENDENCIES="
+    build+run:
+    $(php_dependencies)
+"
+
+php-pecl_get_abi() {
+    illegal_in_global_scope
+
+    echo -n "${MULTIBUILD_PHP_ABIS_CURRENT_TARGET}"
+}
+
+php-pecl_prepare_one_multibuild() {
+    default
+    edo phpize-$(php-pecl_get_abi)
+}
+
+prepare_one_multibuild() {
+    php-pecl_prepare_one_multibuild
+}
+
+php-pecl_configure_one_multibuild() {
+    econf \
+        "${PHP_PECL_SRC_CONFIGURE_PARAMS[@]}" \
+        --with-php-config=/usr/$(exhost --target)/bin/php-config-$(php-pecl_get_abi)
+}
+
+configure_one_multibuild() {
+    php-pecl_configure_one_multibuild
+}
+
+php-pecl_install_one_multibuild() {
+    local abi=$(php-pecl_get_abi)
+    local extensionDir extensionFileName
+
+    edo mkdir -p "${IMAGE}"/etc/php-${abi}
+
+    if [[ "$PHP_MODULE_TYPE" == "zend" ]] ; then
+        extensionDir=$(php-config-${abi} --extension-dir)
+        extensionFileName="${extensionDir}/${MY_SONAME}.so"
+        edo echo "zend_extension = ${extensionFileName}" > "${IMAGE}"/etc/php-${abi}/${PN}.ini
+    elif [[ "$PHP_MODULE_TYPE" == "module" ]] ; then
+        edo echo "extension = ${MY_SONAME}.so" > "${IMAGE}"/etc/php-${abi}/${PN}.ini
+    else
+        die "Invalid module type"
+    fi
+
+    INSTALL_ROOT="${IMAGE}" default
+}
+
+install_one_multibuild() {
+    php-pecl_install_one_multibuild
+}
+
+php-pecl_test_one_multibuild() {
+    export NO_INTERACTION=Yes
+
+    default
+}
+
+test_one_multibuild() {
+    php-pecl_test_one_multibuild
+}
+

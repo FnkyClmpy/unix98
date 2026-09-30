@@ -1,0 +1,180 @@
+# Copyright 2009 Saleem Abdulrasool <compnerd@compnerd.org>
+# Copyright 2009 Bo Ørsted Andresen <zlin@exherbo.org>
+# Distributed under the terms of the GNU General Public License v2
+
+# TODO: make it more general to allow other chars too
+multibuild_target_sanitize() {
+    echo ${target//./_}
+}
+
+multibuild_default_target() {
+    local default_target=MULTIBUILD_${1}_DEFAULT_TARGET
+    [[ ${2:-${MULTIBUILD_TARGET}} == ${!default_target} ]]
+}
+
+# multibuild_get_var $class $target $var
+multibuild_get_var() {
+    local merged class=${1} target=${2} var=${3}
+
+    multibuild_merge_build_target_vars ${class} ${target}
+
+    merged=MULTIBUILD_${class}_$(multibuild_target_sanitize)_MERGED_${var}
+    echo "${!merged}"
+}
+
+# multibuild_get_all_var $class $var
+multibuild_get_all_var() {
+    local x target class=${1} var=${2}
+    x=MULTIBUILD_${class}_TARGETS
+    for target in ${!x}; do
+        multibuild_get_var ${class} ${target} ${var}
+    done
+}
+
+# multibuild_load_build_target $class $target
+multibuild_load_build_target() {
+    local merged class=${1} target=${2} prepend var
+
+    multibuild_merge_build_target_vars ${class} ${target}
+
+    # load _MERGED_ variables
+    for merged in $(eval echo \${!MULTIBUILD_${class}_$(multibuild_target_sanitize)_MERGED_*}); do
+        export MULTIBUILD_${class}_$(multibuild_target_sanitize)_CURRENT_${merged#MULTIBUILD_${class}_$(multibuild_target_sanitize)_MERGED_}="${!merged}"
+        export ${merged#MULTIBUILD_${class}_$(multibuild_target_sanitize)_MERGED_}="${!merged}"
+    done
+
+    # remove previously prepended values
+    for prepend in $(eval echo \${!MULTIBUILD_${class}_PREPEND_*}); do
+        var=${prepend#MULTIBUILD_${class}_PREPEND_}
+        if [[ -n ${!prepend} ]]; then
+            export ${var}="${!var//${!prepend}}"
+            export ${prepend}=
+        fi
+    done
+
+    # prepend _PREPEND_ variables
+    for prepend in $(eval echo \${!MULTIBUILD_${class}_$(multibuild_target_sanitize)_PREPEND_*}); do
+        var=${prepend#MULTIBUILD_${class}_$(multibuild_target_sanitize)_PREPEND_}
+        if [[ ${!var} != *${!prepend}* ]]; then
+            export ${var}="${!prepend}${!var}"
+            export MULTIBUILD_${class}_PREPEND_${var}="${!prepend}"
+        fi
+    done
+
+    # set current target
+    export MULTIBUILD_${class}_CURRENT_TARGET="${target}"
+}
+
+# multibuild_save_build_target $class
+multibuild_save_build_target() {
+    local x var class=${1}
+    local target=MULTIBUILD_${class}_CURRENT_TARGET
+
+    target=${!target}
+    [[ -n ${target} ]] || die "Could not determine current build target"
+
+    for x in $(eval echo \${!MULTIBUILD_${class}_$(multibuild_target_sanitize)_CURRENT_*}); do
+        var=${x#MULTIBUILD_${class}_$(multibuild_target_sanitize)_CURRENT_}
+        export MULTIBUILD_${class}_$(multibuild_target_sanitize)_MERGED_${var}="${!var}"
+    done
+
+    # enforce _LOCKED_ variables
+    multibuild_enforce_locked_vars ${class} $(multibuild_target_sanitize)
+}
+
+# multibuild_switch_build_target $class $target
+multibuild_switch_build_target() {
+    local target=MULTIBUILD_${class}_CURRENT_TARGET
+    [[ -n ${!target} ]] && multibuild_save_build_target "${@}"
+    multibuild_load_build_target "${@}"
+}
+
+# multibuild_merge_build_target_vars $class $target
+multibuild_merge_build_target_vars() {
+    local merged stacked x var all class=${1} target=${2}
+
+    # if profile and user vars have not been merged, merge them
+    merged=MULTIBUILD_${class}_$(multibuild_target_sanitize)_MERGED
+    if [[ -z ${!merged} ]]; then
+        # merge MULTIBUILD_C_64_PROFILE_CFLAGS, MULTIBUILD_C_64_USER_CFLAGS and CFLAGS in a
+        # MULTIBUILD_C_64_MERGED_CFLAGS variable, in that order.
+        #
+        # if MULTIBUILD_C_ALL_CFLAGS is unset store the value of CFLAGS in it so it can be appended
+        # for all build targets.
+        stacked=MULTIBUILD_${class}_STACKED_VARS
+        for x in $(eval echo \${!MULTIBUILD_${class}_$(multibuild_target_sanitize)_PROFILE_*} \
+                             \${!MULTIBUILD_${class}_$(multibuild_target_sanitize)_USER_*}); do
+            var=${x#MULTIBUILD_${class}_$(multibuild_target_sanitize)_@(PROFILE|USER)_}
+            all=MULTIBUILD_${class}_ALL_${var}
+            [[ unset == ${!all-unset} ]] && export ${all}="${!var}"
+            merged=MULTIBUILD_${class}_$(multibuild_target_sanitize)_MERGED_${var}
+            if has ${var} ${!stacked}; then
+                export ${merged}="${!merged}${!x:+${!merged:+ }${!x}}"
+            elif [[ -n ${!x} ]] ; then
+                export ${merged}="${!x}"
+            fi
+        done
+        # append the MULTIBUILD_C_ALL_CFLAGS
+        for merged in $(eval echo \${!MULTIBUILD_${class}_$(multibuild_target_sanitize)_MERGED_*}); do
+            var=${merged#MULTIBUILD_${class}_$(multibuild_target_sanitize)_MERGED_}
+            all=MULTIBUILD_${class}_ALL_${var}
+            if has ${var} ${!stacked}; then
+                export ${merged}="${!merged}${!all:+${!merged:+ }${!all}}"
+            elif [[ -n ${!all} ]] ; then
+                export ${merged}="${!all}"
+            fi
+        done
+        export MULTIBUILD_${class}_$(multibuild_target_sanitize)_MERGED=true
+    fi
+
+    # enforce _LOCKED_ variables
+    multibuild_enforce_locked_vars ${class} $(multibuild_target_sanitize)
+}
+
+# multibuild_enforce_locked_vars $class $target
+multibuild_enforce_locked_vars() {
+    local var locked_var merged class=${1} target=${2}
+
+    var=MULTIBUILD_${class}_LOCKED_VARS
+    for var in ${!var}; do
+        locked_var=MULTIBUILD_${class}_$(multibuild_target_sanitize)_PROFILE_${var}
+        merged=MULTIBUILD_${class}_$(multibuild_target_sanitize)_MERGED_${var}
+        export ${merged}="${!locked_var}"
+    done
+}
+
+multibuild_load_default_targets() {
+    local class target
+    for class in ${MULTIBUILD_CLASSES}; do
+        x=MULTIBUILD_${class}_DEFAULT_TARGET
+        if [[ -n ${!x} ]]; then
+            multibuild_load_build_target ${class} ${!x:-DEFAULT}
+        fi
+    done
+}
+
+multibuild_sanity_check_profile() {
+    local x var class target
+
+    for class in ${MULTIBUILD_CLASSES} ; do
+        x=MULTIBUILD_${class}_TARGETS
+        for target in ${!x}; do
+            x=MULTIBUILD_${class}_REQUIRED_VARS
+            for var in ${!x}; do
+                x=MULTIBUILD_${class}_$(multibuild_target_sanitize)_PROFILE_${var}
+                [[ -n ${!x} ]] || die "Invalid profile does not set ${x}"
+            done
+        done
+    done
+
+    x=MULTIBUILD_${class}_DEFAULT_TARGET
+    if [[ ${!x} ]]; then
+        [[ ${target} == ${!x} ]] || die "Invalid profile sets ${target} target last, should be ${!x}"
+    fi
+}
+
+if [[ ${EXHERES_PHASE} != metadata ]] ; then
+    multibuild_sanity_check_profile
+    multibuild_load_default_targets
+fi
+

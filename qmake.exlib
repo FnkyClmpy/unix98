@@ -1,0 +1,97 @@
+# Copyright 2008, 2009 Ingmar Vanhassel <ingmar@exherbo.org>
+# Copyright 2014 Heiko Becker <heirecka@exherbo.org>
+# Distributed under the terms of the GNU General Public License v2
+
+# EQMAKE_SOURCES
+# TODO: CONFIG += / -=
+
+require toolchain-funcs
+
+export_exlib_phases src_configure
+
+# Default to slot=5 for now
+myexparam slot=5
+exparam -v qt_slot slot
+
+# whether an option needs to be enabled to add the qtbase dependency
+myexparam -b with_opt=false
+if exparam -b with_opt; then
+    myexparam option_name=qt${qt_slot}
+    exparam -v QMAKE_OPTION_NAME option_name
+
+    MYOPTIONS="${QMAKE_OPTION_NAME}"
+fi
+
+DEPENDENCIES="build: "
+exparam -b with_opt && DEPENDENCIES+="${QMAKE_OPTION_NAME}? "
+DEPENDENCIES+="( x11-libs/qtbase:${qt_slot}[?gui] )"
+
+DEFAULT_SRC_INSTALL_PARAMS=( INSTALL_ROOT="${IMAGE}" )
+
+qmake_mkspecs_dir() {
+     # Allows us to define which mkspecs dir we want to use.
+    illegal_in_global_scope
+
+    local spec
+
+    spec="linux"
+    if [[ ${CXX} == *c++* ]]; then
+        if cxx-is-gcc;then
+            spec+="-g++"
+        elif cxx-is-clang;then
+            spec+="-clang"
+        else
+            die "Unknown compiler ${CXX}; you will need to add a check for it to qt.exlib"
+        fi
+    else
+        die "Unknown compiler ${CXX}"
+    fi
+
+    echo "${spec}"
+}
+
+eqmake() {
+    illegal_in_global_scope
+
+    if [[ ${1} == +([[:digit:]]) ]] ; then
+        qt_slot=${1}
+        shift
+    fi
+
+    export QMAKESPEC="/usr/$(exhost --target)/lib/qt${qt_slot}/mkspecs/$(qmake_mkspecs_dir)"
+
+    local qmake_path host=$(exhost --target)
+
+    case ${qt_slot} in
+        4)
+            qmake_path=/usr/${host}/bin/qmake
+            ;;
+        5|6)
+            qmake_path=/usr/${host}/lib/qt${qt_slot}/bin/qmake
+            ;;
+    esac
+
+    [[ -x ${qmake_path} ]] || die "eqmake() called but no qmake found under ${qmake_path}"
+
+    [[ ${@} == ${@%.pro} && -z ${EQMAKE_SOURCES[@]} ]] && EQMAKE_SOURCES=( ${PN}.pro )
+
+    edo ${qmake_path} \
+        QTDIR="/usr/${host}/lib" \
+        QMAKE="${qmake_path}" \
+        QMAKE_CFLAGS_RELEASE="${CFLAGS}" \
+        QMAKE_CXXFLAGS_RELEASE="${CXXFLAGS}" \
+        QMAKE_LFLAGS_RELEASE="${LDFLAGS}" \
+        QMAKE_CFLAGS_DEBUG="${CFLAGS}" \
+        QMAKE_CXXFLAGS_DEBUG="${CXXFLAGS}" \
+        QMAKE_LFLAGS_DEBUG="${LDFLAGS}" \
+        CONFIG+=nostrip \
+        "${EQMAKE_PARAMS[@]}" \
+        "${EQMAKE_SOURCES[@]}" "${@}"
+}
+
+qmake_src_configure() {
+    illegal_in_global_scope
+
+    eqmake ${qt_slot}
+}
+

@@ -1,0 +1,23 @@
+# Copyright 2008-2011 Saleem Abdulrasool <compnerd@compnerd.org>
+# Distributed under the the GNU General Public License
+# Based in part upon 'gnome.org.eclass' from Gentoo which is:
+#     Copyright 1999-2004 Gentoo Foundation
+
+myexparam pn=${MY_PN:-${PN}}
+myexparam pnv=${MY_PNV:-$(exparam pn)-${PV/_/.}}
+myexparam suffix=tar.bz2
+myexparam -b no_tarball=false
+
+HOMEPAGE="http://projects.gnome.org/$(exparam pn)"
+REMOTE_IDS="gnome:$(exparam pn)"
+
+if ever is_scm || exparam -b no_tarball ; then
+    DOWNLOADS=""
+    SCM_REPOSITORY="https://git.gnome.org/browse/$(exparam pn)"
+    require scm-git
+elif ever at_least 40; then
+    DOWNLOADS="mirror://gnome/sources/$(exparam pn)/$(ever major)/$(exparam pnv).$(exparam suffix)"
+else
+    DOWNLOADS="mirror://gnome/sources/$(exparam pn)/$(ever range 1-2)/$(exparam pnv).$(exparam suffix)"
+fi
+

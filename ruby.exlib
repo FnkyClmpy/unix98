@@ -1,0 +1,134 @@
+# Copyright 2016 Marvin Schmidt <marv@exherbo.org>
+# Distributed under the terms of the GNU General Public License v2
+# Based in part upon 'lua.exlib', which is:
+#   Copyright 2009, 2011 Ali Polatel <alip@exherbo.org>
+#   Copyright 2014 Heiko Becker <heirecka@exherbo.org>
+
+# exparams:
+#   blacklist ( format: none or "a x.y" ) ( empty by default )
+#     Ruby ABIs that do not work with this package.
+#
+#     none: whitelist all abis
+#
+#     a: blacklists a.{0,1,2,...}
+#
+#     x.y: blacklists x.y
+
+#   min_versions ( format: "a.b.c x.y.z" ) ( empty by default )
+#     Minimal working version for each Ruby ABI
+#
+#   multibuild ( format: true or false ) ( defaults to true )
+#     Whether the package can be built for several Ruby ABIs
+#
+#   multiunpack, work
+#     See easy-multibuild.exlib
+#
+#   with_opt ( format: true or false ) ( defaults to false )
+#     Whether an option needs to be enabled to build Ruby bindings
+#
+#   option_name ( format: foo ) ( defaults to ruby )
+#     The name of the option that needs to be enabled to build Ruby bindings
+#
+#
+# example (assuming the Ruby ABIs 3.2, 3.3 and 3.4 are present):
+#
+#   require ruby [ blacklist="3.2" min_versions="3.3.1 3.4.0" with_opt=true ]
+#
+#   generates:
+#
+#   MYOPTIONS="
+#       ruby? (
+#           ( ruby_abis: 3.3 3.4 ) [[ number-selected = at-least-one ]]
+#       )
+#   "
+#
+#   DEPENDENCIES="
+#       build+run:
+#           ruby_abis:3.3? ( dev-lang/ruby:3.3[>=3.3.1] )
+#           ruby_abis:3.4? ( dev-lang/ruby:3.4[>=3.4.0] )
+#   "
+
+myexparam -b multibuild=true
+myexparam blacklist=none
+myexparam -b with_opt=false
+
+if exparam -b with_opt; then
+    myexparam option_name=ruby
+    exparam -v RUBY_OPTION_NAME option_name
+
+    MYOPTIONS="${RUBY_OPTION_NAME}"
+fi
+
+myexparam min_versions=
+exparam -v RUBY_BLACKLIST blacklist
+exparam -v RUBY_MIN_VERSIONS min_versions
+
+# RUBY_AVAILABLE_ABIS below need to be in sync with
+# MULTIBUILD_RUBY_ABIS_TARGETS in profiles/make.defaults.
+RUBY_AVAILABLE_ABIS="2.7 3.0 3.1 3.2 3.3 3.4"
+
+if [[ ${RUBY_BLACKLIST} == none ]]; then
+    RUBY_FILTERED_ABIS="${RUBY_AVAILABLE_ABIS}"
+else
+    RUBY_FILTERED_ABIS=
+
+    for abi in ${RUBY_AVAILABLE_ABIS}; do
+        if has $(ever major ${abi}) ${RUBY_BLACKLIST}; then
+            continue
+        elif has ${abi} ${RUBY_BLACKLIST}; then
+            continue
+        fi
+
+        RUBY_FILTERED_ABIS+="${abi} "
+    done
+
+    if [[ -z ${RUBY_FILTERED_ABIS} ]]; then
+        die "All available Ruby ABI have been blacklisted"
+    fi
+fi
+
+if exparam -b multibuild; then
+    myexparam -b multiunpack=false
+    exparam -b multiunpack && myexparam work=${PNV} && exparam -v RUBY_WORK work
+
+    exparam -v RUBY_MULTIUNPACK multiunpack
+
+    require easy-multibuild [ classes=[ RUBY_ABIS ] with_option=${RUBY_OPTION_NAME} \
+            multiunpack=${RUBY_MULTIUNPACK} $(exparam -b multiunpack && echo "work=${RUBY_WORK}") ]
+
+    MULTIBUILD_RUBY_ABIS_TARGETS="${RUBY_FILTERED_ABIS}"
+fi
+
+MYOPTIONS+=' ('
+exparam -b with_opt && MYOPTIONS+=" ${RUBY_OPTION_NAME}?"
+
+MYOPTIONS+=" ( ruby_abis: ( ${RUBY_FILTERED_ABIS} ) [["
+# set the maximum of enabled ruby_abis:*
+exparam -b multibuild && MYOPTIONS+=' number-selected = at-least-one' || MYOPTIONS+=' number-selected = exactly-one'
+MYOPTIONS+=' ]] ) )'
+
+DEPENDENCIES+="build+run: ( "
+exparam -b with_opt && DEPENDENCIES+="${RUBY_OPTION_NAME}? "
+DEPENDENCIES+="( "
+for abi in ${RUBY_FILTERED_ABIS};  do
+    DEPENDENCIES+="ruby_abis:${abi}? ( dev-lang/ruby:${abi}"
+    for min_version in ${RUBY_MIN_VERSIONS}; do
+        if [[ $(ever range 1-2 ${min_version}) == ${abi} ]]; then
+            DEPENDENCIES+="[>=${min_version}]"
+            break
+        fi
+    done
+    DEPENDENCIES+=" ) "
+done
+DEPENDENCIES+=") )"
+
+ruby_get_abi() {
+    illegal_in_global_scope
+
+    if exparam -b multibuild; then
+        echo -n "${MULTIBUILD_RUBY_ABIS_CURRENT_TARGET}"
+    else
+        echo -n "${RUBY_ABIS}"
+    fi
+}
+

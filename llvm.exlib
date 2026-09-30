@@ -1,0 +1,104 @@
+# Copyright 2022 Marvin Schmidt <marv@exherbo.org>
+# Distributed under the terms of the GNU General Public License v2
+
+# This exlib is for packages using LLVM
+#
+# Mainly adjusts PATH to use the correct LLVM slot and adds appropriate
+# dependencies.
+#
+# Optional parameters:
+#   llvm_slots=[ supported slots ]
+#
+#   llvm_opts (format: "[foo][bar]") (empty by default)
+#     options that need to be enabled for dev-lang/llvm
+#
+#   additional_packages (format: array, default to [ ] )
+#     Add additional slotted llvm packages to DEPENDENCIES
+#
+#   add_deps (boolean, defaults to true)
+#     whether to add the a build+run: dependency block for the selected slots
+#     (and possible additional packages). If you need something custom, set it
+#     to false. The print_llvm_dependencies may be helpful in this case.
+#
+#   with_opt (boolean, defaults to false)
+#     whether an option needs to be enabled to use LLVM
+#
+#   option_name (format: foo) (defaults to llvm)
+#     the name of the option that needs to be enabled to use LLVM
+#
+
+# If the package doesn't support all slots you have to list them yourself
+myexparam llvm_slots=[ 21 20 19 18 17 16 15 ]
+
+myexparam llvm_opts=
+
+myexparam additional_packages=[ ]
+exparam -v LLVM_ADDITIONAL_PACKAGES additional_packages[@]
+
+myexparam -b add_deps=true
+
+myexparam -b with_opt=false
+exparam -b with_opt && myexparam option_name=llvm
+exparam -b with_opt && myexparam -b option_is_negated=false
+
+exparam -v LLVM_SLOTS llvm_slots[@]
+if exparam -b with_opt; then
+    exparam -v LLVM_OPTION_NAME option_name
+    MYOPTIONS="${LLVM_OPTION_NAME}"
+
+    LLVM_OPTION_SPEC="$(exparam -b option_is_negated && echo '!')${LLVM_OPTION_NAME}?"
+fi
+exparam -v LLVM_OPTS llvm_opts
+
+if [[ -n "${LLVM_SLOTS[*]}" ]]; then
+    MYOPTIONS+="
+        $(exparam -b with_opt && echo ${LLVM_OPTION_SPEC}) (
+            ( llvm_abis: ${LLVM_SLOTS[*]} ) [[ number-selected = exactly-one ]]
+        )
+    "
+fi
+
+require providers
+
+# Prints the llvm dependency string for all llvm_slots and possible additional
+# packages passed via the additional_packages exparam.
+# Optionally takes additional llvm packages (in the case it's not really
+# suitable to add them via the additional_packages exparam) to add them to
+# DEPENDENCIES as well.
+
+# to add them to DEPENDENCIES as well.
+print_llvm_dependencies() {
+    local additional_package
+    for slot in "${LLVM_SLOTS[@]}"; do
+        echo "llvm_abis:${slot}? ( dev-lang/llvm:${slot}${LLVM_OPTS} "
+
+        for additional_package in "${LLVM_ADDITIONAL_PACKAGES[@]}" ; do
+            echo "${additional_package}:${slot} "
+        done
+
+        for package in "${@}"; do
+            echo "${package}:${slot} "
+        done
+
+        echo ")"
+    done
+}
+
+if exparam -b add_deps ; then
+    DEPENDENCIES="
+        $(exparam -b with_opt && echo ${LLVM_OPTION_SPEC}) (
+            build+run:
+                $(print_llvm_dependencies)
+        )
+    "
+fi
+
+llvm_get_abi() {
+    echo -n "${LLVM_ABIS}"
+}
+
+llvm_providers_set() {
+    providers_set "llvm $(llvm_get_abi)"
+
+}
+

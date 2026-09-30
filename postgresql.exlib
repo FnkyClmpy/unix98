@@ -1,0 +1,145 @@
+# Copyright 2018 Thomas Berger <loki@lokis-chaos.de>
+# Distributed under the terms of the GNU General Public License v2
+
+# Based in part on 'python.exlib', which is:
+#   Copyright 2009 Ingmar Vanhassel
+#   Copyright 2013 Jorge Aparicio
+#   Copyright 2015 Pierre Lejeune
+
+# exparams:
+#   min_version ( format: "a.b" ) ( empty by default )
+#     minimal working PostgreSQL version for the extension
+#
+#   max_version ( format: "a.b" ) ( empty by default )
+#     heighest working PostgreSQL version for the extension
+#
+#   postgresql_opts ( format: "[foo][bar]" ) ( empty by default )
+#     options that need to be enabled in dev-db/postgresql
+#
+#   multiunpack, work
+#     see easy-multibuild.exlib
+#
+#   with_opt ( format: true or false ) ( defaults to false )
+#     whether an option needs to be enabled to build postgresql extensions
+#
+#   option_name ( format: foo ) ( defaults to postgresql-extension )
+#     the name of the option that needs to be enabled to build postgresql extensions
+
+# example:
+#   require postgresql [ postgresql_opts="[hstore]" min_versions="17" \
+#                    max_version="18" with_opt=true ]
+#
+# generates:
+#   OPTIONS="
+#       postgresql-extension? ( ( postgresql_servers: 17 18 ) [
+#           number-selected = at-least-one
+#       ] )
+#   "
+#
+#   DEPENDENCIES="
+#       postgresql_servers:17? ( dev-db/postgresql:17[hstore] )
+#       postgresql_servers:18? ( dev-db/postgresql:18[hstore] )
+#   "
+
+
+myexparam min_version=
+myexparam max_version=
+myexparam -b multiunpack=true
+myexparam -b with_opt=false
+myexparam -b multibuild=true
+myexparam postgresql_opts=
+
+if exparam -b multiunpack; then
+    myexparam work=${PNV}
+    exparam -v POSTGRESQL_WORK work
+fi
+
+if exparam -b with_opt; then
+    myexparam option_name=postgresql-extension
+    exparam -v POSTGRESQL_OPTION_NAME option_name
+
+    MYOPTIONS="${POSTGRESQL_OPTION_NAME}"
+fi
+
+# POSTGRESQL_AVAILABLE_SERVERS below need to be in sync with
+# MULTBUILD_POSTGRESQL_SERVERS_TARGETS in profiles/make.defaults.
+POSTGRESQL_AVAILABLE_SERVERS="14 15 16 17 18"
+POSTGRESQL_FILTERED_SERVERS="${POSTGRESQL_AVAILABLE_SERVERS}"
+
+# filter the ABIS based on {min,max}_version
+exparam -v POSTGRESQL_MIN_VERSION min_version
+exparam -v POSTGRESQL_MAX_VERSION max_version
+
+if [[ -n "${POSTGRESQL_MIN_VERSION}" ]] ; then
+    # search for the first matching version
+    found_min_version=0
+    filtered_servers=
+    for server in ${POSTGRESQL_FILTERED_SERVERS} ; do
+        if [[ ${found_min_version} == 1 || "${server}" == "${POSTGRESQL_MIN_VERSION}" ]] ; then
+            filtered_servers+="${server} "
+            found_min_version=1
+        fi
+    done
+    POSTGRESQL_FILTERED_SERVERS=${filtered_servers}
+fi
+
+if [[ -n "${POSTGRESQL_MAX_VERSION}" ]] ; then
+    # search the last matching version
+    filtered_servers=
+    for server in ${POSTGRESQL_FILTERED_SERVERS} ; do
+        filtered_servers+="${server} "
+        if [ "${server}" == "${POSTGRESQL_MAX_VERSION}" ] ; then
+            break
+        fi
+    done
+    POSTGRESQL_FILTERED_SERVERS=${filtered_servers}
+fi
+
+# we prepare our MULTIBUILD_POSTGRESQL_SERVERS_*_PROFILE_PG_* here
+# to avoid the need of $(exhost --target) in make.defaults
+for server in ${POSTGRESQL_FILTERED_SERVERS} ; do
+    export MULTIBUILD_POSTGRESQL_SERVERS_${server//./_}_PROFILE_PG_CONFIG="/usr/$(exhost --target)/libexec/postgresql-${server}/pg_config"
+done
+
+MULTIBUILD_POSTGRESQL_SERVERS_TARGETS="${POSTGRESQL_FILTERED_SERVERS}"
+
+# add the options for the postgresql abis
+MYOPTIONS='('
+exparam -b with_opt && MYOPTIONS+=" ${POSTGRESQL_OPTION_NAME}?"
+MYOPTIONS+=" ( postgresql_servers: ( ${POSTGRESQL_FILTERED_SERVERS} )"
+if exparam -b multibuild; then
+    MYOPTIONS+=" [[ number-selected = at-least-one ]]"
+else
+    MYOPTIONS+=" [[ number-selected = exactly-one ]]"
+fi
+MYOPTIONS+=' ) )'
+
+# define our dependencies
+exparam -v POSTGRESQL_OPTS postgresql_opts
+DEPENDENCIES+="build+run: ( "
+exparam -b with_opt && DEPENDENCIES+="${POSTGRESQL_OPTION_NAME}? "
+DEPENDENCIES+="( "
+for server in ${POSTGRESQL_FILTERED_SERVERS};  do
+    DEPENDENCIES+="postgresql_servers:${server}? ( dev-db/postgresql:${server}"
+    DEPENDENCIES+="${POSTGRESQL_OPTS} ) "
+done
+DEPENDENCIES+=") )"
+
+
+exparam -v POSTGRESQL_MULTIUNPACK multiunpack
+require easy-multibuild [ classes=[ POSTGRESQL_SERVERS ] multiunpack=${POSTGRESQL_MULTIUNPACK} \
+                            $(exparam -b multiunpack && echo "work=${POSTGRESQL_WORK}") ]
+
+
+postgresql_prepare_one_multilib() {
+    if [[ -f Makefile ]] ; then
+       edo sed -i 's/^PG_CONFIG\s*=.*/PG_CONFIG ?= pg_config/g' Makefile
+    fi
+}
+
+prepare_one_multibuild() {
+    default
+
+    postgresql_prepare_one_multilib
+}
+

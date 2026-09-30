@@ -1,0 +1,24 @@
+# Copyright 2009 Ingmar Vanhassel
+# Distributed under the terms of the GNU General Public License v2
+
+export_exlib_phases src_compile src_install
+
+DEPENDENCIES="
+    build:
+        sys-devel/ftjam
+"
+
+ejam() {
+    illegal_in_global_scope
+
+    edo jam "${@}"
+}
+
+jam_src_compile() {
+    ejam -dx -q -j${EXJOBS:-1}
+}
+
+jam_src_install() {
+    DESTDIR="${IMAGE}" ejam install
+}
+

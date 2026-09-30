@@ -1,0 +1,366 @@
+# Copyright 2013 Jorge Aparicio
+# Copyright 2015 Pierre Lejeune
+# Distributed under the terms of the GNU General Public License v2
+
+# exparams:
+#   import ( format: distutils or setuptools ) ( defaults to empty )
+#     which packaging system will be used ( check setup.py in sources )
+#
+#   test ( format: nose, nose2 or pytest ) ( defaults to empty )
+#     if empty:
+#       distutils will NOT run any test, this should only be used if upstream
+#       doesn't provide a test suite.
+#       setuptools will use its built-in test system, which may or may not run
+#       the provided test suite.
+#       the packager can reimplement setup-py_test_one_multibuild in this case
+#
+#     nose: nosetests "${NOSETESTS_PARAMS[@]}" will be run
+#
+#     pytest: py.test "${PYTEST_PARAMS[@]}" will be run
+#
+#   cfg_file ( format: setup or site ) ( defaults to empty )
+#     the name of cfg file to be created for more details see:
+#     http://docs.python.org/2/distutils/configfile.html
+#
+#   blacklist ( defaults to none )
+#     see python.exlib
+#
+#   has_bin, has_lib, min_versions, python_opts, multibuild, multiunpack, work,
+#   with_opt, option_name, 2to3
+#     see python.exlib
+
+# VARIABLES:
+#   SETUP_CFG_COMMANDS ( format: command )
+#     [command] section will be added to the cfg file
+#
+#   SETUP_CFG_command_PARAMS ( format: ( "opt1 = val1" "opt2=val2" ) )
+#     opt=val pairs will be added under the [command] section of the cfg file
+#
+#   SETUP_CFG_command_OPTIONS ( format: ( "a b c d" "e f g h" ) )
+#     a = $(option b c d) will be resolved and added under the [command]
+#     section of the cfg file
+
+# functions:
+#   setup-cfg_${COMMAND}_append
+#     append "option = value" pairs under the [command] section that require
+#     more complex dependencies on options e.g. optionq foo && optionq bar or
+#     python_abis e.g. ${MULTIBUILD_TARGET}
+
+# example:
+#
+#   SETUP_CFG_COMMANDS="gui_support packages"
+#   SETUP_CFG_gui_support_PARAMS=(
+#       "agg = True"
+#   )
+#   SETUP_CFG_gui_support_OPTIONS=(
+#       "gtkagg gtk True False"
+#   )
+#   SETUP_CFG_packages_PARAMS=(
+#       "sample_data = False"
+#   )
+#
+#   setup-cfg_gui_support_append() {
+#       echo gtk3cairo = $(option cairo $(option gtk3 True False) False) >> setup.cfg
+#   }
+#
+#   require setup-py [ import=distutils cfg_file=setup test=nose \
+#                      blacklist="3" ]
+#
+#   generates the following setup.cfg file
+#
+#   [gui_support]
+#   agg = True
+#   gtkagg = $(option gtk True False)
+#   gtk3cairo = $(option cairo $(option gtk3 True False) False)
+#   [packages]
+#   sample_data = False
+
+myexparam -b with_opt=false
+exparam -v SETUP_PY_WITH_OPT with_opt
+
+if exparam -b with_opt; then
+    myexparam option_name=python
+    exparam -v SETUP_PY_OPTION_NAME option_name
+    SETUP_PY_WITH_OPT+=" option_name=${SETUP_PY_OPTION_NAME}"
+fi
+
+myexparam -b multibuild=true
+exparam -v SETUP_PY_MULTIBUILD multibuild
+
+if exparam -b multibuild; then
+    myexparam work=${PNV}
+    exparam -v SETUP_PY_WORK work
+    SETUP_PY_MULTIBUILD="${SETUP_PY_MULTIBUILD} multiunpack=true work=${SETUP_PY_WORK}"
+fi
+
+myexparam has_bin=false
+myexparam has_lib=true
+myexparam blacklist=none
+myexparam min_versions=
+myexparam python_opts=
+myexparam -b 2to3=false
+
+require python [ has_bin=$(exparam has_bin) \
+                 has_lib=$(exparam has_lib) \
+                 blacklist="$(exparam blacklist)" \
+                 min_versions="$(exparam min_versions)" \
+                 python_opts="$(exparam python_opts)" \
+                 multibuild=${SETUP_PY_MULTIBUILD} \
+                 with_opt=${SETUP_PY_WITH_OPT} \
+                 2to3=$(exparam 2to3) ]
+
+myexparam import
+
+exparam -v SETUP_PY_IMPORT import
+
+setuptools_slot() {
+    case ${1} in
+        2.7)
+            echo "2.7"
+            ;;
+        *)
+            echo "0"
+            ;;
+    esac
+}
+
+if [[ ${SETUP_PY_IMPORT} == setuptools ]]; then
+    DEPENDENCIES+="build: ( "
+    exparam -b with_opt && DEPENDENCIES+="${SETUP_PY_OPTION_NAME}? "
+    DEPENDENCIES+="( "
+    for abi in ${PYTHON_FILTERED_ABIS};  do
+        DEPENDENCIES+="python_abis:${abi}? ( dev-python/setuptools:$(setuptools_slot ${abi})[python_abis:${abi}] ) "
+    done
+    DEPENDENCIES+=") )"
+fi
+
+myexparam cfg_file=
+
+exparam -v CFG_FILE cfg_file
+
+if [[ ! -z ${CFG_FILE}  ]] && [[ -z ${SETUP_CFG_COMMANDS}  ]]; then
+    die "No commands specified in SETUP_CFG_COMMANDS"
+fi
+
+setup-py_run_phase() {
+    if exparam -b multibuild; then
+        easy-multibuild_src_${EXHERES_PHASE}
+    else
+        setup-py_${EXHERES_PHASE}_one_multibuild
+    fi
+}
+
+export_exlib_phases src_prepare src_configure src_compile src_install
+
+setup-py_prepare_one_multibuild() {
+    [[ -n ${@} ]] && die "${FUNCNAME} takes no arguments"
+
+    python_prepare_one_multibuild
+
+    # remove ez_setup stuff to prevent packages
+    # from installing setuptools on their own
+    if ls ez_setup* > /dev/null 2>&1; then
+        rm -rf ez_setup*
+        echo "def use_setuptools(*args, **kwargs): pass" > ez_setup.py
+    fi
+
+    # some tarballs ship with a o-r egg-info dir.
+    # make sure it doesnt end up getting installed as
+    # o-r by fixing up the permissions here. otherwise
+    # we will get bitten by it after installation.
+    # also there are sucky packages who print to stdout in setup.py
+    # so we loop over all the lines and check if this is an actual name
+    local i; ${PYTHON} -B setup.py --name 2>/dev/null | while read -r i; do
+        [[ -d ${i}.egg-info ]] && edo chmod -R o+r "${i}.egg-info"
+    done
+}
+
+prepare_one_multibuild() {
+    setup-py_prepare_one_multibuild
+}
+
+setup-py_src_prepare() {
+    setup-py_run_phase
+}
+
+setup-cfg_var_name() {
+    [[ ${#} -eq 1 ]] || die "setup-cfg_var_name needs exactly one argument"
+
+    echo SETUP_CFG_${SETUP_CFG_THIS}_${1}[@]
+}
+
+setup-cfg_get_var() {
+    [[ ${#} -eq 1 ]] || die "setup-cfg_get_var needs exactly one argument"
+
+    local var=$(setup-cfg_var_name ${1})
+    SETUP_CFG_OUT=("${!var}")
+}
+
+setup-cfg_option() {
+    [[ ${#} -eq 4 ]] || die "setup-cfg_option needs exactly four arguments"
+
+    echo $1 = $(option $2 $3 $4)
+}
+
+setup-py_configure_one_multibuild() {
+    [[ -n ${@} ]] && die "${FUNCNAME} takes no arguments"
+
+    if [[ ! -z $CFG_FILE ]]; then
+        for cmd in $SETUP_CFG_COMMANDS; do
+            SETUP_CFG_THIS=$cmd
+
+            echo [$cmd] >> ${CFG_FILE}.cfg
+
+            setup-cfg_get_var PARAMS
+            for param in "${SETUP_CFG_OUT[@]}"; do
+                echo $param >> ${CFG_FILE}.cfg
+            done
+
+            setup-cfg_get_var OPTIONS
+            for opt in "${SETUP_CFG_OUT[@]}"; do
+                setup-cfg_option $opt >> ${CFG_FILE}.cfg
+            done
+
+            declare -F setup-cfg_${cmd}_append >/dev/null &&
+                setup-cfg_${cmd}_append
+        done
+    fi
+
+    edo ${PYTHON} -B setup.py "${SETUP_PY_PARAMS[@]}" config "${SETUP_PY_SRC_CONFIGURE_PARAMS[@]}"
+}
+
+configure_one_multibuild() {
+    setup-py_configure_one_multibuild
+}
+
+setup-py_src_configure() {
+    setup-py_run_phase
+}
+
+setup-py_compile_one_multibuild() {
+    [[ -n ${@} ]] && die "${FUNCNAME} takes no arguments"
+
+    # get the sysconfig.py and friends for the target
+    # NOTE(moben): Extremely likely that this needs more work to actually cross-compile anything.
+    local target=$(exhost --target)
+
+    _PYTHON_HOST_PLATFORM=linux-${target%%-*} PYTHONPATH=$(python_get_libdir) \
+    edo ${PYTHON} -B setup.py "${SETUP_PY_PARAMS[@]}" build \
+        "${SETUP_PY_SRC_COMPILE_PARAMS[@]}"
+}
+
+compile_one_multibuild() {
+    setup-py_compile_one_multibuild
+}
+
+setup-py_src_compile() {
+    setup-py_run_phase
+}
+
+setup-py_install_one_multibuild() {
+    [[ -n ${@} ]] && die "${FUNCNAME} takes no arguments"
+
+    # get the sysconfig.py and friends for the target
+    local target=$(exhost --target)
+
+    _PYTHON_HOST_PLATFORM=linux-${target%%-*} PYTHONPATH=$(python_get_libdir) \
+    edo ${PYTHON} -B setup.py "${SETUP_PY_PARAMS[@]}" install   \
+        --root="${IMAGE}"                                       \
+        --install-data=/usr                                     \
+        --prefix=/usr/$(exhost --target)                        \
+        --no-compile                                            \
+        --force                                                 \
+        "${SETUP_PY_SRC_INSTALL_PARAMS[@]}"
+
+    python_bytecompile
+
+    emagicdocs
+}
+
+install_one_multibuild() {
+    setup-py_install_one_multibuild
+}
+
+setup-py_src_install() {
+    setup-py_run_phase
+}
+
+export_exlib_phases src_test
+
+myexparam test=
+exparam -v SETUP_PY_TEST test
+
+if [[ -z ${SETUP_PY_TEST} ]]; then
+    if [[ ${SETUP_PY_IMPORT} == distutils ]]; then
+        setup-py_test_one_multibuild() {
+            [[ -n ${@}  ]] && die "${FUNCNAME} takes no arguments"
+            ewarn "distutils doesn't run any test suite on its own"
+        }
+    elif [[ ${SETUP_PY_IMPORT} == setuptools ]]; then
+        setup-py_test_one_multibuild() {
+            ewarn "After being deprecated for almost 5 years, setuptools >= 72.1.0 (currently"
+            ewarn "masked) removed the setup.py test command. ${PNV} needs to migrate to another"
+            ewarn "test runner (e.g pytest)."
+
+            [[ -n ${@}  ]] && die "${FUNCNAME} takes no arguments"
+            PYTHONPATH="$(ls -d ${PWD}/build/lib*)" edo ${PYTHON} -B setup.py "${SETUP_PY_PARAMS[@]}" test "${SETUP_PY_SRC_TEST_PARAMS[@]}"
+        }
+    fi
+else
+    case ${SETUP_PY_TEST} in
+        nose)
+            DEPENDENCIES+=" ( test: dev-python/nose[python_abis:*(-)?] )"
+
+            setup-py_test_one_multibuild() {
+                [[ -n ${@} ]] && die "${FUNCNAME} takes no arguments"
+
+                NOSETESTS="nosetests-$(python_get_abi)"
+
+                PYTHONPATH="$(ls -d ${PWD}/build/lib*)" edo ${NOSETESTS} "${NOSETESTS_PARAMS[@]}"
+            }
+            ;;
+        nose2)
+            DEPENDENCIES+=" ( test: dev-python/nose2[python_abis:*(-)?] )"
+
+            setup-py_test_one_multibuild() {
+                [[ -n ${@} ]] && die "${FUNCNAME} takes no arguments"
+
+                PYTHONPATH="$(ls -d ${PWD}/build/lib*)" edo ${PYTHON} -m nose2 -v "${NOSETESTS_PARAMS[@]}"
+            }
+            ;;
+        pytest)
+            DEPENDENCIES+=" ( test: dev-python/pytest[python_abis:*(-)?] )"
+
+            setup-py_test_one_multibuild() {
+                [[ -n ${@} ]] && die "${FUNCNAME} takes no arguments"
+
+                PYTEST_SKIP_LISTS=()
+
+                if [[ -n ${PYTEST_SKIP} ]]; then
+                    PYTEST_SKIP_ARG="not ${PYTEST_SKIP[0]}"
+                    PYTEST_SKIP_TESTS=("${PYTEST_SKIP[@]:1}")
+                    for test in "${PYTEST_SKIP_TESTS[@]}"; do
+                        PYTEST_SKIP_ARG+=" and not $test"
+                    done
+                    PYTEST_SKIP_LIST+=("-k" "${PYTEST_SKIP_ARG}")
+                fi
+
+                PYTEST="py.test-$(python_get_abi)"
+
+                PYTHONPATH="$(ls -d ${PWD}/build/lib*)" edo ${PYTEST} "${PYTEST_SKIP_LIST[@]}" "${PYTEST_PARAMS[@]}"
+            }
+            ;;
+        *)
+            die "unknown test system"
+            ;;
+    esac
+fi
+
+test_one_multibuild() {
+    setup-py_test_one_multibuild
+}
+
+setup-py_src_test() {
+    setup-py_run_phase
+}
+

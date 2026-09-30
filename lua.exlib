@@ -1,0 +1,158 @@
+# Copyright 2009, 2011 Ali Polatel <alip@exherbo.org>
+# Copyright 2014 Heiko Becker <heirecka@exherbo.org>
+# Distributed under the terms of the GNU General Public License v2
+
+# Based in part upon 'python.exlib' which is:
+#   Copyright 2009 Ingmar Vanhassel, Copyright 2013 Jorge Aparicio
+
+# exparams:
+#   whitelist ( format: all or "x.y" ) ( all by default )
+#     Lua abis that work with this package. 'all' whitelists all abis.
+#
+#     x.y: allows x.y
+#
+#   min_versions ( format: "a.b.c x.y.z" ) ( empty by default )
+#     minimal working version for each Lua abi
+#
+#   multibuild ( format: true or false ) ( defaults to true )
+#     whether the package can be built for several Lua abis
+#     NOTE: At the moment, a package can only use one multibuild "class".
+#           For example, it can be built for multiple Lua abis or multiple C abis,
+#           but not both at the same time. If you want to build for 32 and 64 bit,
+#           you have to set multibuild=false here.
+#           Also, all of your lua dependencies will have to be multibuild=false
+#           because they need to be installed to the libdir with the right bitness.
+#
+#   multiunpack, work
+#     see easy-multibuild.exlib
+#
+#   with_opt ( format: true or false ) ( defaults to false )
+#     whether an option needs to be enabled to build Lua bindings
+#
+#   option_name ( format: foo ) ( defaults to lua )
+#     the name of the option that needs to be enabled to build Lua bindings
+
+# example:
+#   require lua [ min_versions="5.1.2" whitelist="5.1" with_opt=true ]
+#
+#   generates:
+#
+#   MYOPTIONS="
+#       lua? (
+#           ( lua_abis: 5.1 ) [[ number-selected = at-least-one ]]
+#       )
+#   "
+#
+#   DEPENDENCIES="
+#       build+run:
+#           lua? (
+#               lua_abis:5.1? ( dev-lang/lua:5.1[>=5.1.2] )
+#           )
+#   "
+
+myexparam -b multibuild=true
+myexparam whitelist=all
+myexparam -b with_opt=false
+
+if exparam -b with_opt ; then
+    myexparam option_name=lua
+    exparam -v LUA_OPTION_NAME option_name
+
+     MYOPTIONS="${LUA_OPTION_NAME}"
+fi
+
+myexparam min_versions=
+exparam -v LUA_WHITELIST whitelist
+exparam -v LUA_MIN_VERSIONS min_versions
+
+# LUA_AVAILABLE_ABIS below need to be in sync with
+# MULTIBUILD_LUA_ABIS_TARGETS in profiles/make.defaults.
+LUA_AVAILABLE_ABIS="5.1 5.2 5.3 5.4 5.5"
+
+if [[ ${LUA_WHITELIST} == all ]] ; then
+    LUA_FILTERED_ABIS="${LUA_AVAILABLE_ABIS}"
+else
+    LUA_FILTERED_ABIS=
+
+    for abi in ${LUA_WHITELIST} ; do
+        if has ${abi} ${LUA_AVAILABLE_ABIS} ; then
+            LUA_FILTERED_ABIS+="${abi} "
+        fi
+    done
+
+    if [[ -z ${LUA_FILTERED_ABIS} ]] ; then
+        die "no available Lua abi has been whitelisted"
+    fi
+fi
+
+if exparam -b multibuild ; then
+    myexparam -b multiunpack=false
+    exparam -b multiunpack && myexparam work=${PNV} && exparam -v LUA_WORK work
+
+    exparam -v LUA_MULTIUNPACK multiunpack
+
+    require easy-multibuild [ classes=[ LUA_ABIS ] with_option=${LUA_OPTION_NAME} \
+            multiunpack=${LUA_MULTIUNPACK} $(exparam -b multiunpack && echo "work=${LUA_WORK}") ]
+
+    MULTIBUILD_LUA_ABIS_TARGETS="${LUA_FILTERED_ABIS}"
+fi
+
+MYOPTIONS+=' ('
+    exparam -b with_opt && MYOPTIONS+=" ${LUA_OPTION_NAME}?"
+
+MYOPTIONS+=" ( lua_abis: ( ${LUA_FILTERED_ABIS} ) [["
+# set the maximum of enabled lua_abis:*
+exparam -b multibuild && MYOPTIONS+=' number-selected = at-least-one' || MYOPTIONS+=' number-selected = exactly-one'
+MYOPTIONS+=' ]] ) )'
+
+DEPENDENCIES+="build+run: ( "
+exparam -b with_opt && DEPENDENCIES+="${LUA_OPTION_NAME}? "
+DEPENDENCIES+="( "
+for abi in ${LUA_FILTERED_ABIS} ;  do
+    DEPENDENCIES+="lua_abis:${abi}? ( dev-lang/lua:${abi}"
+    for min_version in ${LUA_MIN_VERSIONS}; do
+        if [[ $(ever range 1-2 ${min_version}) == ${abi} ]]; then
+            DEPENDENCIES+="[>=${min_version}]"
+            break
+        fi
+    done
+    DEPENDENCIES+=" ) "
+done
+DEPENDENCIES+=") )"
+
+lua_get_abi() {
+    illegal_in_global_scope
+
+    if exparam -b multibuild ; then
+        echo -n "${MULTIBUILD_LUA_ABIS_CURRENT_TARGET}"
+    else
+        echo -n "${LUA_ABIS}"
+    fi
+}
+
+lua_get_sharedir() {
+    illegal_in_global_scope
+
+    echo -n /usr/share/lua/$(lua_get_abi)
+}
+
+lua_get_libdir() {
+    illegal_in_global_scope
+
+    echo -n "/usr/$(exhost --target)/lib/lua/$(lua_get_abi)"
+}
+
+lua_install_module() {
+    illegal_in_global_scope
+
+    insinto $(lua_get_sharedir)
+    doins "$@"
+}
+
+lua_install_cmodule() {
+    illegal_in_global_scope
+
+    insinto $(lua_get_libdir)
+    doins "$@"
+}
+
